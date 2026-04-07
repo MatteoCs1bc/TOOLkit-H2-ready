@@ -1,4 +1,5 @@
-Benvenuto nel **Tool di Scouting Industriale H2READY**. Questo strumento è progettato per supportare le Amministrazioni Comunali nell'identificazione delle aziende del proprio territorio che presentano il maggior potenziale strategico per la transizione verso l'idrogeno verde.
+Benvenuto nel **Tool di Scouting Industriale H2READY**.   
+Questo strumento è progettato per supportare le Amministrazioni Comunali nell'identificazione delle aziende del proprio territorio che presentano il maggior potenziale strategico per la transizione verso l'idrogeno verde.
 
 Il sistema si basa sul principio della **neutralità tecnologica**: l'idrogeno viene considerato una priorità esclusivamente per i settori "Hard-to-Abate" (HTA), ovvero dove le temperature di processo superano i 400°C o dove l'idrogeno è impiegato come materia prima. Per tutti i settori con processi a bassa/media temperatura, l'elettrificazione (es. pompe di calore) rimane la soluzione più efficiente ed economica.
 
