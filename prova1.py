@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
 
 # Configurazione della pagina
 st.set_page_config(page_title="H2READY Scouting Tool", layout="wide")
@@ -67,25 +66,53 @@ def assign_tier(score):
 st.title("🔍 H2READY: Tool di Scouting Industriale (A.1)")
 st.markdown("**Parola d'ordine: IDROGENO SOLO DOVE ALTRIMENTI NON ELETTRIFICABILE!**")
 
-# --- SEZIONE ESPANDIBILE CON LETTURA DA FILE ESTERNO ---
+# --- SEZIONE ESPANDIBILE: GUIDA ALL'UTILIZZO ---
 with st.expander("📚 Guida all'Utilizzo: Scopri come funziona l'algoritmo e come preparare i dati", expanded=False):
-    # Prova a leggere il file Markdown esterno
-    file_guida = "guida.md"
-    if os.path.exists(file_guida):
-        with open(file_guida, 'r', encoding='utf-8') as f:
-            testo_guida = f.read()
-        st.markdown(testo_guida)
-    else:
-        st.warning("Il file della guida ('guida.md') non è stato trovato nella directory. Crealo per visualizzare le istruzioni qui.")
+    st.markdown("""
+    Benvenuto nel **Tool di Scouting Industriale H2READY**. Questo strumento è progettato per supportare le Amministrazioni Comunali nell'identificazione delle aziende del proprio territorio che presentano il maggior potenziale strategico per la transizione verso l'idrogeno verde.
 
-    # Aggiungo la tabella riassuntiva sotto il testo letto dal file
-    st.table({
-        "Nome Colonna (Esatto)": ["Nome Azienda", "Codice ATECO", "Dimensione", "Fatturato (€)", "# Dipendenti", "Ubicazione/Consorzio", "Vicinanza South H2 Corridor"],
-        "Tipo di Dato": ["Testo", "Testo / Numero", "Testo (Grande/Media/Piccola)", "Numero", "Numero", "Testo (SÌ/NO)", "Testo (SÌ/NO)"],
-        "Obbligatorio": ["SÌ", "SÌ", "SÌ", "NO", "NO", "NO", "NO"],
-        "Esempio Compilazione": ["Acciaierie Friulane S.p.A.", "24.10 oppure 24", "Grande", "50000000", "250", "SÌ", "NO"]
+    Il sistema si basa sul principio della **neutralità tecnologica**: l'idrogeno viene considerato una priorità esclusivamente per i settori "Hard-to-Abate" (HTA), ovvero dove le temperature di processo superano i 400°C o dove l'idrogeno è impiegato come materia prima. Per tutti i settori con processi a bassa/media temperatura, l'elettrificazione (es. pompe di calore) rimane la soluzione più efficiente ed economica.
+
+    ### 1. Come funziona l'algoritmo di Scoring (I Pesi)
+    Il tool calcola automaticamente uno "Score Strategico" per ogni azienda caricata, assegnandola a una fascia di priorità (Tier) basandosi su tre parametri fondamentali:
+
+    **A. Il Peso del Settore (Codice ATECO) - *Fattore Obbligatorio***
+    Il motore di calcolo analizza le prime due cifre del Codice ATECO dell'azienda per determinarne l'idoneità termica o chimica all'uso dell'idrogeno:
+    * **Priorità Assoluta (Score Base: 5 Punti):** ATECO 24.x (Siderurgia e Metallurgia) e ATECO 19.x/20.x (Chimica e Raffinazione).
+    * **Priorità Alta (Score Base: 4 Punti):** ATECO 23.x (Minerali Non Metalliferi: Cemento, Vetro, Ceramica).
+    * **ESCLUSIONE (Score: 0 Punti):** ATECO 10.x, 11.x, 16.x, 13.x, 14.x, 17.x (Alimentare, Legno, Carta, Tessile). Processi a bassa/media temperatura elettrificabili.
+
+    **B. Il Moltiplicatore Dimensionale - *Fattore Obbligatorio***
+    Le aziende di maggiori dimensioni hanno tipicamente una maggiore capacità di sostenere investimenti infrastrutturali (CAPEX).
+    * **Grande Impresa:** x1.5 | **Media Impresa:** x1.2 | **Piccola Impresa:** x1.0
+
+    **C. I Bonus Strategici e Territoriali - *Fattori Opzionali***
+    * **Aggregazione Consortile (+3 Punti):** L'appartenenza a Consorzi di Sviluppo Economico facilita la condivisione delle infrastrutture.
+    * **South H2 Corridor (+3 Punti):** La vicinanza al futuro gasdotto transnazionale (PCI) garantisce un'opzione di approvvigionamento strategico.
+
+    ### 2. Classificazione dei Risultati (Tier)
+    * 🟢 **Tier 1 - Priorità Alta (Score ≥ 10.0):** Aziende ideali per i tavoli tecnici strategici H2READY e studi di pre-fattibilità.
+    * 🟡 **Tier 2 - Media (Score 7.0 - 9.9):** Aziende con buon potenziale, da coinvolgere in logiche di distretto.
+    * 🔴 **Non Idoneo / Tier 3:** Settori elettrificabili o con punteggi insufficienti.
+
+    ### 3. Come strutturare il file Excel / CSV di Input
+    Affinché il tool funzioni correttamente, il file caricato **DEVE** avere l'intestazione esattamente come mostrata qui sotto. 
+    *(Nota: le prime tre colonne sono obbligatorie. Le altre possono essere lasciate vuote, ma il nome della colonna deve essere presente).*
+    """)
+
+    # Tabella di Esempio (Esattamente come nell'immagine)
+    df_esempio = pd.DataFrame({
+        "Nome Azienda": ["Acciaierie Friulane S.p.A.", "Vetreria Esempio S.r.l."],
+        "Codice ATECO": ["24.10", "23"],
+        "Dimensione": ["Grande", "Media"],
+        "Fatturato (€)": [50000000, 12000000],
+        "# Dipendenti": [250, 45],
+        "Ubicazione/Consorzio": ["SÌ", "NO"],
+        "Vicinanza South H2 Corridor": ["NO", "SÌ"]
     })
-    st.caption("*Suggerimento: Scarica l'elenco delle aziende dal registro camerale (o dal Consorzio locale) e rinomina le colonne affinché corrispondano esattamente alla tabella qui sopra prima di caricare il file.*")
+    
+    st.dataframe(df_esempio, hide_index=True, use_container_width=True)
+    st.caption("*Suggerimento: Prepara il tuo file Excel copiando esattamente queste 7 intestazioni di colonna.*")
 
 # --- SEZIONE DI CARICAMENTO FILE ---
 st.info("Carica il database aziendale. Colonne minime richieste: Nome Azienda, Codice ATECO, Dimensione.")
@@ -94,7 +121,7 @@ uploaded_file = st.file_uploader("Carica il database aziendale (Formato .xlsx o 
 
 if uploaded_file is not None:
     try:
-        # Lettura file (supporta sia excel che csv)
+        # Lettura file
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
@@ -102,7 +129,7 @@ if uploaded_file is not None:
             
         df.columns = df.columns.str.strip()
         
-        # Controlli di sicurezza SOLO sulle colonne base
+        # Controlli di sicurezza
         required_cols = ['Nome Azienda', 'Codice ATECO', 'Dimensione']
         missing_cols = [col for col in required_cols if col not in df.columns]
         
@@ -110,12 +137,11 @@ if uploaded_file is not None:
             st.error(f"Errore: Nel file mancano le colonne obbligatorie: {', '.join(missing_cols)}")
             st.stop()
             
-        # Calcolo dei punteggi
+        # Calcolo
         df['Score Strategico'] = df.apply(calculate_score, axis=1)
         df['Analisi Processo'] = df['Codice ATECO'].apply(lambda x: get_ateco_score(x)[1])
         df['Classificazione'] = df['Score Strategico'].apply(assign_tier)
         
-        # Ordinamento
         df_sorted = df.sort_values(by='Score Strategico', ascending=False)
         
         st.success("Analisi completata con successo! (Le colonne opzionali vuote o mancanti sono state ignorate).")
@@ -126,7 +152,7 @@ if uploaded_file is not None:
         col2.metric("Aziende Tier 1 (Priorità H2)", len(df_sorted[df_sorted['Classificazione'] == 'Tier 1 - Priorità Alta']))
         col3.metric("Aziende Escluse (Elettrificabili)", len(df_sorted[df_sorted['Classificazione'] == 'Non Idoneo']))
         
-        # Visualizzazione Tabella
+        # Visualizzazione Tabella Risultati
         st.write("### Risultati dello Scouting")
         st.dataframe(
             df_sorted.style.map(
@@ -134,7 +160,8 @@ if uploaded_file is not None:
                 else ('background-color: #f8d7da; color: black' if x == 'Non Idoneo' else ''),
                 subset=['Classificazione']
             ),
-            use_container_width=True
+            use_container_width=True,
+            hide_index=True
         )
         
         # Download
