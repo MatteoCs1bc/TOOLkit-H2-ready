@@ -112,10 +112,10 @@ if uploaded_file is not None:
         col2.metric("Aziende Tier 1 (Priorità H2)", len(df_sorted[df_sorted['Classificazione'] == 'Tier 1 - Priorità Alta']))
         col3.metric("Aziende Escluse (Elettrificabili)", len(df_sorted[df_sorted['Classificazione'] == 'Non Idoneo']))
         
-        # Visualizzazione Tabella
+        # Visualizzazione Tabella (CORRETTO applymap -> map)
         st.write("### Risultati dello Scouting")
         st.dataframe(
-            df_sorted.style.applymap(
+            df_sorted.style.map(
                 lambda x: 'background-color: #d4edda; color: black' if x == 'Tier 1 - Priorità Alta' 
                 else ('background-color: #f8d7da; color: black' if x == 'Non Idoneo' else ''),
                 subset=['Classificazione']
