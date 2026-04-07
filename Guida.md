@@ -1,7 +1,7 @@
-Benvenuto nel **Tool di Scouting Industriale H2READY**.   
-Questo strumento è progettato per supportare le Amministrazioni Comunali nell'identificazione delle aziende del proprio territorio che presentano il maggior potenziale strategico per la transizione verso l'idrogeno verde.
+Benvenuto nel **Tool di Scouting Industriale H2READY**. Questo strumento è progettato per supportare le Amministrazioni Comunali nell'identificazione delle aziende del proprio territorio che presentano il maggior potenziale strategico per la transizione verso l'idrogeno verde.
 
-Il sistema si basa sul principio della **neutralità tecnologica**: l'idrogeno viene considerato una priorità esclusivamente per i settori "Hard-to-Abate" (HTA), ovvero dove le temperature di processo superano i 400°C o dove l'idrogeno è impiegato come materia prima. Per tutti i settori con processi a bassa/media temperatura, l'elettrificazione (es. pompe di calore) rimane la soluzione più efficiente ed economica.
+Il sistema si basa sul principio della **neutralità tecnologica**:   
+l'idrogeno viene considerato una priorità esclusivamente per i settori "Hard-to-Abate" (HTA), ovvero dove le temperature di processo superano i 400°C o dove l'idrogeno è impiegato come materia prima. Per tutti i settori con processi a bassa/media temperatura, l'elettrificazione (es. pompe di calore) rimane la soluzione più efficiente ed economica.
 
 ### 1. Come funziona l'algoritmo di Scoring (I Pesi)
 Il tool calcola automaticamente uno "Score Strategico" per ogni azienda caricata, assegnandola a una fascia di priorità (Tier) basandosi su tre parametri fondamentali:
@@ -30,4 +30,8 @@ Se il file Excel contiene i dati, il sistema premia le sinergie:
 ### 2. Classificazione dei Risultati (Tier)
 Sulla base del punteggio totale, le aziende vengono classificate in tre fasce:
 * 🟢 **Tier 1 - Priorità Alta (Score ≥ 10.0):** Aziende ideali per essere invitate ai tavoli tecnici strategici H2READY e per accedere a studi di pre-fattibilità.
-* 🟡 **Tier 2 - Media (Score 7
+* 🟡 **Tier 2 - Media (Score 7.0 - 9.9):** Aziende con buon potenziale, da coinvolgere in logiche di distretto o per applicazioni specifiche (es. cogenerazione).
+* 🔴 **Non Idoneo / Tier 3:** Settori elettrificabili o con punteggi insufficienti per giustificare l'investimento nell'idrogeno.
+
+### 3. Come strutturare il file di Input
+Affinché il tool funzioni correttamente, il file caricato **DEVE** rispettare un'intestazione precisa. È sufficiente che siano presenti le colonne obbligatorie.
