@@ -6,7 +6,7 @@ from io import BytesIO
 # Configurazione Pagina
 st.set_page_config(page_title="H2READY - Scouting Tool", layout="wide")
 
-# --- LOGICA DI SCORING (Versione 3.0 - Inclusa Anoxidall/Keyword Recovery) ---
+# --- LOGICA DI SCORING (Versione 3.0) ---
 def get_base_score(row):
     ateco = str(row.get('codice ateco', '')).replace('.', '').strip()
     prefix = ateco[:2]
@@ -15,7 +15,7 @@ def get_base_score(row):
     if prefix in ['24', '19', '20']: return 5, "HTA Priorità Assoluta (RED III / Siderurgia)"
     elif prefix == '23': return 4, "HTA Calore Estremo (Vetro/Cemento)"
     
-    # Check 2: Recupero tramite parole chiave (Logica per aziende con ATECO borderline)
+    # Check 2: Recupero tramite parole chiave (Logica per aziende borderline)
     testo_tecnico = (str(row.get('processo', '')) + " " + str(row.get('note', ''))).lower()
     parole_chiave = ['metano', 'mw', 'forno', 'fusione', 'calore', 'termico', 'ossidazione', 'verniciatura', 'fiamme']
     
@@ -45,17 +45,25 @@ def calculate_total_score(row):
 # --- GENERATORE DI TEMPLATE EXCEL ---
 def generate_template():
     output = BytesIO()
-    # Definiamo le 11 colonne esatte
+    # Definiamo le 11 colonne esatte CON LE UNITA' DI MISURA
     cols = [
-        "nome azienda", "Codice ateco", "dimensione", "fatturato", "dipendenti", 
-        "ubicazione/consorzio", "vicinanza South H2 corridor", "AIA (si/no)", 
-        "consumo energia stimato", "processo", "note"
+        "nome azienda", 
+        "Codice ateco", 
+        "dimensione", 
+        "fatturato [M€]", 
+        "dipendenti", 
+        "ubicazione/consorzio", 
+        "vicinanza South H2 corridor", 
+        "AIA (si/no)", 
+        "consumo energia stimato [MWh]", 
+        "processo", 
+        "note"
     ]
-    # Dati di esempio
+    # Dati di esempio (ora i valori di fatturato ed energia sono numeri puri)
     example_data = [
-        ["Acciaierie Esempio S.p.A.", "24.10", "Grande", "150M", 400, "SÌ", "SÌ", "SÌ", "Alto", "Fusione metalli", "Esempio HTA"],
-        ["Vetreria Nord S.r.l.", "23.13", "Media", "12M", 80, "SÌ", "NO", "SÌ", "Medio", "Forni fusori", ""],
-        ["Anoxidall S.r.l.", "26.01.30", "Piccola", "", 56, "Z.I. Ponte Rosso", "NO", "Sì", "1.9 MW", "Ossidazione", "Forni a metano"]
+        ["Acciaierie Esempio S.p.A.", "24.10", "Grande", 150, 400, "SÌ", "SÌ", "SÌ", 50000, "Fusione metalli", "Esempio HTA"],
+        ["Vetreria Nord S.r.l.", "23.13", "Media", 12, 80, "SÌ", "NO", "SÌ", 15000, "Forni fusori", ""],
+        ["Anoxidall S.r.l.", "26.01.30", "Piccola", None, 56, "Z.I. Ponte Rosso", "NO", "Sì", None, "Ossidazione", "Forni a metano 1.9 MW"]
     ]
     df_temp = pd.DataFrame(example_data, columns=cols)
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -69,7 +77,7 @@ st.title("🚀 H2READY Strategic Scouting Tool")
 with st.expander("📖 ISTRUZIONI E PREPARAZIONE FILE (Leggi qui prima di iniziare)", expanded=True):
     st.markdown("""
     ### 1. Requisiti del File di Input
-    Il file deve essere in formato **.xlsx (Excel)** o **.csv**. Per garantire il corretto funzionamento, scarica e compila il template qui sotto.
+    Il file deve essere in formato **.xlsx (Excel)** o **.csv**. Per garantire il corretto funzionamento e la pulizia dei dati, scarica e compila il template qui sotto.
     """)
     
     # Tasto Download Template
@@ -83,13 +91,16 @@ with st.expander("📖 ISTRUZIONI E PREPARAZIONE FILE (Leggi qui prima di inizia
 
     st.markdown("""
     ### 2. Struttura delle Colonne
-    Il tool cerca esattamente queste intestazioni (non importa l'ordine):
+    Il tool cerca esattamente queste intestazioni. **Nota:** Inserisci solo numeri puri nelle colonne con l'unità di misura!
     * **nome azienda** (Obbligatorio)
     * **Codice ateco** (Obbligatorio: formato 23.51 o 2351)
     * **dimensione** (Obbligatorio: Grande, Media o Piccola)
+    * **fatturato [M€]** (Opzionale: es. scrivi 12 per 12 milioni di euro)
+    * **dipendenti** (Opzionale: numero intero)
     * **ubicazione/consorzio** (Opzionale: scrivi 'SÌ' o 'Z.I.' per bonus)
     * **vicinanza South H2 corridor** (Opzionale: scrivi 'SÌ' per bonus)
     * **AIA (si/no)** (Opzionale: scrivi 'SÌ' per bonus)
+    * **consumo energia stimato [MWh]** (Opzionale: numero intero)
     * **processo** e **note** (Opzionali ma fondamentali per recuperare aziende borderline tramite parole chiave come *forno*, *metano*, *MW*).
 
     ### 3. Logica dello Score
@@ -107,7 +118,6 @@ if uploaded_file:
     try:
         df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         # Normalizzazione nomi colonne per la logica interna
-        original_cols = df.columns.tolist()
         df.columns = df.columns.str.strip().str.lower()
         
         # Calcoli
