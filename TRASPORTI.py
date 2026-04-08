@@ -54,7 +54,7 @@ with st.sidebar:
 
     st.header("4. Proiezioni Future")
     anno_acquisto = st.slider("Anno Previsto di Acquisto", 2024, 2035, 2024)
-    anni_utilizzo = st.slider("Ciclo di Vita Utile (Anni)", 5, 15, 10)
+    anni_utilizzo = st.slider("Ciclo di Vita Utile (Anni)", 5, 20, 10)
 
 km_annui = km_giornalieri * giorni_operativi
 total_km_life = km_annui * anni_utilizzo
@@ -64,7 +64,7 @@ total_km_life = km_annui * anni_utilizzo
 # ==========================================
 
 params = {
-    "Automobile": {"glider": 25000, "fc_kw": 100, "tank_cost": 5000, "maint_bev": 0.03, "maint_h2": 0.05, "maint_fossile": 0.05, "cons_bev": 0.18, "cons_fossile": 0.06, "lim_peso": 400},
+    "Automobile": {"glider": 25000, "fc_kw": 100, "tank_cost": 5000, "maint_bev": 0.03, "maint_h2": 0.05, "maint_fossile": 0.065, "cons_bev": 0.18, "cons_fossile": 0.06, "lim_peso": 400},
     "Autobus Urbano": {"glider": 150000, "fc_kw": 200, "tank_cost": 35000, "maint_bev": 0.15, "maint_h2": 0.25, "maint_fossile": 0.30, "cons_bev": 1.1, "cons_fossile": 0.35, "lim_peso": 3000},
     "Autobus Extraurbano": {"glider": 150000, "fc_kw": 200, "tank_cost": 35000, "maint_bev": 0.15, "maint_h2": 0.25, "maint_fossile": 0.30, "cons_bev": 1.0, "cons_fossile": 0.30, "lim_peso": 4000},
     "Camion Pesante": {"glider": 120000, "fc_kw": 300, "tank_cost": 45000, "maint_bev": 0.15, "maint_h2": 0.25, "maint_fossile": 0.25, "cons_bev": 1.4, "cons_fossile": 0.33, "lim_peso": 4500}
@@ -79,18 +79,14 @@ fabbisogno_kwh = km_giornalieri * cons_reale_bev * 1.15
 peso_batt = fabbisogno_kwh / densita_batt
 tempo_ric = fabbisogno_kwh / (1000 if (anno_acquisto >= 2028 and tipo_veicolo != "Automobile") else 150)
 
-# Economia
+# Economia Simulatori Rapidi
 costo_batt = interpolate(anno_acquisto, 210, 100)
 costo_fc = interpolate(anno_acquisto, 330, 210)
 prezzo_h2_sim = interpolate(anno_acquisto, prezzo_h2_base, 8.0)
 prezzo_el_sim = interpolate(anno_acquisto, prezzo_el_base, prezzo_el_base * 0.9)
 
-# Fattore di conversione realistico (kWh -> kg H2) per il simulatore in alto
-conv_factor = 20.0 if tipo_veicolo == "Automobile" else 15.0
-cons_h2_kg_km = cons_reale_bev / conv_factor
-
 tco_bev = (p["glider"] + fabbisogno_kwh * costo_batt) + (total_km_life * (cons_reale_bev * prezzo_el_sim + p["maint_bev"]))
-tco_h2 = (p["glider"] + p["fc_kw"] * costo_fc + p["tank_cost"]) + (total_km_life * (cons_h2_kg_km * prezzo_h2_sim + p["maint_h2"]))
+tco_h2 = (p["glider"] + p["fc_kw"] * costo_fc + p["tank_cost"]) + (total_km_life * ((cons_reale_bev/15.0) * prezzo_h2_sim + p["maint_h2"]))
 
 prezzo_f_base = prezzo_benzina if tipo_veicolo == "Automobile" else prezzo_diesel
 tco_fossile = (p["glider"] * 0.8) + (total_km_life * (p["cons_fossile"] * mult_env * prezzo_f_base + p["maint_fossile"]))
@@ -143,7 +139,7 @@ with col_i2:
     st.metric("Gap al Chilometro", f"€ {gap_h2/total_km_life:,.3f} /km", delta_color="inverse")
 
 # ==========================================
-# ANALISI VALORI ASSOLUTI E GRAFICI
+# ANALISI VALORI ASSOLUTI E GRAFICI DA EXCEL
 # ==========================================
 st.divider()
 st.header("📊 Analisi Valori Assoluti (Ciclo di Vita e TCO)")
@@ -168,11 +164,19 @@ try:
     c_emiss = {"Automobile": {"Fossile": 6000, "BEV": 12000, "H2": 14000}, "Autobus Urbano": {"Fossile": 50000, "BEV": 85000, "H2": 95000}, "Autobus Extraurbano": {"Fossile": 50000, "BEV": 85000, "H2": 95000}, "Camion Pesante": {"Fossile": 60000, "BEV": 110000, "H2": 125000}}
     m_emiss_km = {"Fossile": 0.05, "BEV": 0.03, "H2": 0.04}
     
-    # PREZZI STANDARDIZZATI CORRETTI (Dinamici in base agli input utente)
+    # Prezzi standardizzati e CONVERSIONE FATTORI (kWh -> natural units)
     prezzi_std = {
         "Benzina": prezzo_benzina, "Diesel": prezzo_diesel,
-        "Elettrico rete": prezzo_el_base, "Elettrico autoprodotto": prezzo_el_base * 0.4, # Proxy costo fotovoltaico
+        "Elettrico rete": prezzo_el_base, "Elettrico autoprodotto": prezzo_el_base * 0.4, 
         "Idrogeno Grigio": 10.0, "Idrogeno rete": prezzo_h2_base, "Idrogeno autoprodotto": (55.0 * prezzo_el_base) + 2.5
+    }
+    
+    # Fattori di conversione per trasformare i kWh/km del tuo Excel in Litri o Kg
+    conv_kwh_to_nat = {
+        "Benzina": 8.76,    # 1 Litro = 8.76 kWh
+        "Diesel": 9.91,     # 1 Litro = 9.91 kWh
+        "Idrogeno": 33.33,  # 1 Kg = 33.33 kWh
+        "Elettrico": 1.0    # 1 kWh = 1 kWh
     }
 
     m_bev = interpolate(anno_acquisto, 1.0, 1.40)
@@ -183,21 +187,30 @@ try:
         t = r['Tecnologia']
         cat = 'BEV' if 'Elettrico' in t else ('H2' if 'Idrogeno' in t else 'Fossile')
         
+        # Identifica il fattore di conversione in base alla stringa
+        divisore = conv_kwh_to_nat["Elettrico"]
+        if "Benzina" in t: divisore = conv_kwh_to_nat["Benzina"]
+        elif "Diesel" in t: divisore = conv_kwh_to_nat["Diesel"]
+        elif "Idrogeno" in t: divisore = conv_kwh_to_nat["Idrogeno"]
+
+        # Consumo in unità naturale (l/km, kg/km, kWh/km)
+        consumo_naturale = r['Consumo'] / divisore
+        
         # Fisica & LCA
         aut_ev = r['Autonomia'] * (m_bev if cat=='BEV' else (m_h2 if cat=='H2' else 1.0))
         e_prod = c_emiss[tipo_veicolo][cat] / 1000
         e_man = (m_emiss_km[cat] * total_km_life) / 1000
         e_fuel = (r['Consumo'] * total_km_life * f_emiss[t]) / 1000
         
-        # TCO Spacchettato
+        # TCO Spacchettato Corretto
         if cat == 'Fossile': cpx = p["glider"] * 0.8
         elif cat == 'BEV': cpx = p["glider"] + fabbisogno_kwh * costo_batt
         else: cpx = p["glider"] + p["fc_kw"] * costo_fc + p["tank_cost"]
         
         mnt = p[f"maint_{cat.lower()}"] * total_km_life
         
-        # FIX COSTO CARBURANTE: Usa il consumo esatto dal file Excel!
-        fuel_cost = r['Consumo'] * prezzi_std.get(t, 0) * total_km_life
+        # Costo Carburante reale = (Consumo Unità Naturale * km totali) * Prezzo alla pompa
+        fuel_cost = (consumo_naturale * total_km_life) * prezzi_std[t]
         
         res.append({
             "Tecnologia": t, "Categoria_Base": "Elettrico (BEV)" if cat == 'BEV' else ("Idrogeno (FCEV)" if cat == 'H2' else t),
