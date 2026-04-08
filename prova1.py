@@ -1,99 +1,102 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import plotly.express as px
 
-# Configurazione della pagina
-st.set_page_config(page_title="H2READY Scouting Tool", layout="wide")
+# Configurazione Pagina
+st.set_page_config(page_title="H2READY - Dashboard Scouting", layout="wide")
 
-# --- LOGICA DI SCORING REVISIONATA ---
-
+# --- LOGICA DI SCORING (Invariata ma robusta) ---
 def get_base_score(row):
-    """Determina il punteggio base analizzando ATECO e Note Tecniche"""
     ateco = str(row.get('codice ateco', '')).replace('.', '').strip()
     prefix = ateco[:2]
+    if prefix in ['24', '19', '20']: return 5, "HTA Priorità Assoluta"
+    elif prefix == '23': return 4, "HTA Calore Estremo"
     
-    # Check 1: Settori HTA Certi
-    if prefix in ['24', '19', '20']:
-        return 5, "HTA Priorità Assoluta (RED III / Siderurgia)"
-    elif prefix == '23':
-        return 4, "HTA Calore Estremo (Vetro/Cemento)"
-    
-    # Check 2: Recupero tramite parole chiave (per aziende come Anoxidall)
-    # Analizziamo le colonne 'processo' e 'note'
     testo_tecnico = (str(row.get('processo', '')) + " " + str(row.get('note', ''))).lower()
     parole_chiave = ['metano', 'mw', 'forno', 'fusione', 'calore', 'termico', 'ossidazione', 'verniciatura']
-    
-    if any(keyword in testo_tecnico for keyword in parole_chiave):
-        # Se troviamo parole chiave termiche in settori borderline (es. 25, 26, 28)
-        if prefix in ['25', '26', '27', '28', '33']:
-            return 3, "Recupero: Processo termico dichiarato (nonostante ATECO)"
-        return 1, "Potenziale basso: Verificare processo elettrificabile"
-
-    # Check 3: Settori Esclusi (Carta, Alimentare, Legno)
-    if prefix in ['10', '11', '16', '17', '13', '14']:
-        return 0, "Escluso: Elettrificabile (Bassa Temp)"
-    
-    return 0, "Non Classificato / Non Idoneo"
+    if any(k in testo_tecnico for k in parole_chiave) and prefix in ['25', '26', '27', '28', '33']:
+        return 3, "Recupero: Processo termico"
+    if prefix in ['10', '11', '16', '17', '13', '14']: return 0, "Escluso (Bassa Temp)"
+    return 0, "Non Idoneo"
 
 def calculate_total_score(row):
-    base_score, _ = get_base_score(row)
-    if base_score == 0:
-        return 0
-        
-    # Moltiplicatore Dimensione
-    dim = str(row.get('dimensione', 'Piccola')).strip().title()
-    mult = 1.5 if dim == 'Grande' else (1.2 if dim == 'Media' else 1.0)
-    score = base_score * mult
-    
-    # Bonus vari (AIA, Consorzio, Corridor)
-    if str(row.get('aia (si/no)', '')).strip().lower() in ['sì', 'si']:
-        score += 2
-    if str(row.get('ubicazione/consorzio', '')).strip().lower() in ['sì', 'si'] or "z.i." in str(row.get('ubicazione/consorzio', '')).lower():
-        score += 3
-    if str(row.get('vicinanza south h2 corridor', '')).strip().lower() in ['sì', 'si']:
-        score += 3
-            
+    base, _ = get_base_score(row)
+    if base == 0: return 0
+    mult = 1.5 if str(row.get('dimensione', '')).title() == 'Grande' else (1.2 if str(row.get('dimensione', '')).title() == 'Media' else 1.0)
+    score = base * mult
+    if str(row.get('aia (si/no)', '')).lower() in ['sì', 'si']: score += 2
+    if "z.i." in str(row.get('ubicazione/consorzio', '')).lower() or str(row.get('ubicazione/consorzio', '')).lower() in ['sì', 'si']: score += 3
+    if str(row.get('vicinanza south h2 corridor', '')).lower() in ['sì', 'si']: score += 3
     return round(score, 1)
 
-# --- INTERFACCIA ---
-st.title("🔍 H2READY: Tool di Scouting Industriale")
+# --- INTERFACCIA DASHBOARD ---
+st.title("🚀 H2READY Strategic Dashboard")
+st.subheader("Identificazione dei Campioni della Transizione Energetica")
 
-with st.expander("📚 Istruzioni per l'Excel"):
-    st.write("Il file deve contenere queste colonne (non importa se maiuscole o minuscole):")
-    st.code("nome azienda, codice ateco, dimensione, ubicazione/consorzio, vicinanza south h2 corridor, aia (si/no), processo, note")
-
-uploaded_file = st.file_uploader("Carica il file Excel o CSV", type=["xlsx", "csv"])
+uploaded_file = st.file_uploader("Carica il database aziendale", type=["xlsx", "csv"])
 
 if uploaded_file:
-    try:
-        df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-        
-        # PULIZIA COLONNE: fondamentale per far funzionare il .get()
-        df.columns = df.columns.str.strip().str.lower()
-        
-        # Calcolo Risultati
-        df['score_strategico'] = df.apply(calculate_total_score, axis=1)
-        df['analisi_tecnica'] = df.apply(lambda r: get_base_score(r)[1], axis=1)
-        
-        # Tiering
-        df['classificazione'] = df['score_strategico'].apply(
-            lambda s: "Tier 1 - Priorità Alta" if s >= 9 else ("Tier 2 - Media" if s >= 5 else "Non Idoneo")
-        )
+    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+    df.columns = df.columns.str.strip().str.lower()
+    
+    # Elaborazione
+    df['score'] = df.apply(calculate_total_score, axis=1)
+    df['tipo'] = df.apply(lambda r: get_base_score(r)[1], axis=1)
+    df['tier'] = df['score'].apply(lambda s: "Tier 1" if s >= 9 else ("Tier 2" if s >= 5 else "Non Idoneo"))
+    df_winners = df[df['tier'] == "Tier 1"].sort_values(by='score', ascending=False)
 
-        # Tabella Risultati
-        df_display = df.sort_values(by='score_strategico', ascending=False)
-        
-        st.subheader("Risultati dello Scouting")
-        st.dataframe(
-            df_display.style.map(
-                lambda x: 'background-color: #d4edda; color: black' if x == 'Tier 1 - Priorità Alta' 
-                else ('background-color: #f8d7da; color: black' if x == 'Non Idoneo' else ''),
-                subset=['classificazione']
-            ),
-            use_container_width=True, hide_index=True
-        )
-        
-        st.download_button("📥 Scarica Report CSV", df_display.to_csv(index=False), "report_h2.csv")
+    # --- 1. KPI SECTION ---
+    st.markdown("---")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Aziende Analizzate", len(df))
+    c2.metric("Campioni (Tier 1)", len(df_winners))
+    c3.metric("Potenziale Medio", f"{df[df['score']>0]['score'].mean():.1f} pts")
+    c4.metric("Settori HTA", len(df[df['score'] > 0]))
 
-    except Exception as e:
-        st.error(f"Errore tecnico: {e}")
+    # --- 2. THE WINNERS PODIUM (Cards) ---
+    st.markdown("### 🏆 Il Podio delle Aziende Vincitrici")
+    if not df_winners.empty:
+        # Mostriamo le top 3 o 4 aziende come card grafiche
+        cols = st.columns(len(df_winners[:4]))
+        for i, (idx, row) in enumerate(df_winners[:4].iterrows()):
+            with cols[i]:
+                st.info(f"**{row['nome azienda']}**")
+                st.write(f"⭐ Score: **{row['score']}**")
+                st.caption(f"📍 {row.get('ubicazione/consorzio', 'N/D')}")
+                st.write(f"🏭 {row['tipo']}")
+    else:
+        st.warning("Nessuna azienda ha raggiunto il Tier 1 con i dati attuali.")
+
+    # --- 3. VISUAL ANALYTICS ---
+    st.markdown("---")
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        st.markdown("#### Distribuzione delle Fasce (Tier)")
+        fig_pie = px.pie(df, names='tier', color='tier', 
+                         color_discrete_map={'Tier 1':'#2E7D32', 'Tier 2':'#FBC02D', 'Non Idoneo':'#D32F2F'})
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    with col_b:
+        st.markdown("#### Top 10 per Punteggio Strategico")
+        fig_bar = px.bar(df.sort_values('score').tail(10), x='score', y='nome azienda', orientation='h',
+                         color='score', color_continuous_scale='Greens')
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # --- 4. DETAILED TABLE (At the bottom) ---
+    st.markdown("---")
+    with st.expander("📂 Sfoglia il Database Completo e Analisi Tecnica"):
+        st.write("Usa i filtri sopra le colonne per ordinare i dati.")
+        
+        # Colorazione per la tabella
+        def color_tier(val):
+            color = '#d4edda' if val == 'Tier 1' else ('#fff3cd' if val == 'Tier 2' else '#f8d7da')
+            return f'background-color: {color}'
+
+        st.dataframe(df.sort_values(by='score', ascending=False), use_container_width=True, hide_index=True)
+
+    # Download Button
+    st.download_button("📥 Esporta Report Finale", df.to_csv(index=False), "h2ready_report.csv", "text/csv")
+
+else:
+    st.warning("In attesa del caricamento del file per generare la dashboard...")
