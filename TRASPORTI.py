@@ -9,11 +9,19 @@ st.set_page_config(page_title="DSS Mobilità - Gap Analysis", layout="wide")
 st.title("🚗 H2READY: Convenience Check & Strategia Incentivi")
 st.markdown("Valutazione fisica, economica e analisi del **Gap di Finanziamento** per la transizione della flotta.")
 
-# Legge il file README se presente
-if os.path.exists("REadMe_Mezzi.md"):
-    with st.expander("ℹ️ Leggi Istruzioni, Limiti e Assunzioni"):
-        with open("REadMe_Mezzi.md", "r", encoding="utf-8") as f:
-            st.markdown(f.read())
+# --- FUNZIONE DI PULIZIA DATI (CORRETTA) ---
+def clean_val(x):
+    """Converte una cella Excel in float in modo sicuro, gestendo unità di misura e stringhe."""
+    if pd.isna(x) or str(x).strip() == "": 
+        return 0.0
+    # Rimuove simboli comuni e pulisce la stringa
+    s = str(x).replace('€', '').replace('%', '').replace(' ', '').replace(',', '.')
+    # Rimuove eventuali parentesi quadre (spesso usate per le unità come [€/l])
+    s = s.replace('[', '').replace(']', '')
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0  # Se è testo (es. "[€/l]"), restituisce 0 senza crashare
 
 # --- FUNZIONI DI INTERPOLAZIONE ---
 def interpolate(year, y_2024, y_2030):
@@ -23,6 +31,13 @@ def interpolate(year, y_2024, y_2030):
 
 # --- INTERFACCIA UTENTE (SIDEBAR) ---
 with st.sidebar:
+    st.header("📂 Caricamento Database")
+    NOME_FILE_EXCEL = "Comparison H2 elc FF.xlsx"
+    if not os.path.exists(NOME_FILE_EXCEL):
+        st.error(f"File '{NOME_FILE_EXCEL}' non trovato.")
+        st.stop()
+    
+    xl = pd.ExcelFile(NOME_FILE_EXCEL, engine='openpyxl')
     st.header("1. Parametri di Missione")
     tipo_veicolo = st.selectbox("Tipo Veicolo", ["Automobile", "Autobus Urbano", "Autobus Extraurbano", "Camion Pesante"])
     km_giornalieri = st.slider("Percorrenza Giornaliera (km)", 10, 1000, 150 if tipo_veicolo == "Automobile" else 250, 10)
@@ -50,7 +65,7 @@ total_km_life = km_annui * anni_utilizzo
 # MOTORE FISICO ED ECONOMICO
 # ==========================================
 
-# Parametri Veicoli (Assunzioni Ingegneristiche)
+# Parametri Veicoli aggiornati
 params = {
     "Automobile": {"glider": 25000, "fc_kw": 100, "tank_cost": 5000, "maint_bev": 0.03, "maint_h2": 0.05, "maint_fossile": 0.05, "cons_bev": 0.18, "cons_fossile": 0.06, "lim_peso": 400},
     "Autobus Urbano": {"glider": 150000, "fc_kw": 200, "tank_cost": 35000, "maint_bev": 0.15, "maint_h2": 0.25, "maint_fossile": 0.30, "cons_bev": 1.1, "cons_fossile": 0.35, "lim_peso": 3000},
@@ -62,7 +77,7 @@ p = params[tipo_veicolo]
 # Correzioni Ambientali
 mult_env = {"Pianura": 1.0, "Collinare": 1.25, "Montagna": 1.45}[orografia] * (1.25 if inverno_rigido else 1.0)
 
-# 1. Calcoli Elettrico (BEV)
+# 1. Calcoli Fisica BEV (con evoluzione tecnologica)
 densita_batt = interpolate(anno_acquisto, 0.16, 0.256)
 cons_reale_bev = p["cons_bev"] * mult_env
 fabbisogno_kwh = km_giornalieri * cons_reale_bev * 1.15
@@ -100,7 +115,7 @@ with c3:
 # ==========================================
 st.divider()
 st.header("💰 Strategia Incentivi & Gap Analysis")
-st.write(f"Differenza di costo rispetto al veicolo **{('Benzina' if tipo_veicolo == 'Automobile' else 'Diesel')}** per l'intero ciclo di vita.")
+st.write(f"Confronto rispetto al veicolo **{('Benzina' if tipo_veicolo == 'Automobile' else 'Diesel')}** per l'intero ciclo di vita.")
 
 col_i1, col_i2 = st.columns(2)
 with col_i1:
@@ -108,76 +123,103 @@ with col_i1:
     st.subheader("Elettrico (BEV)")
     st.metric("Gap TCO Totale", f"€ {gap_bev:,.0f}", delta_color="inverse")
     st.metric("Gap al Chilometro", f"€ {gap_bev/total_km_life:,.3f} /km")
-    st.caption("Se negativo, l'elettrico è già più conveniente.")
 
 with col_i2:
     gap_h2 = tco_h2 - tco_fossile
     st.subheader("Idrogeno (FCEV)")
     st.metric("Gap TCO Totale", f"€ {gap_h2:,.0f}", delta_color="inverse")
     st.metric("Gap al Chilometro", f"€ {gap_h2/total_km_life:,.3f} /km")
-    st.caption("Include extra-costo carburante e tecnologia FC.")
 
 # ==========================================
-# ANALISI VALORI ASSOLUTI (LCA & TECNICA)
+# ANALISI VALORI ASSOLUTI (DA EXCEL)
 # ==========================================
 st.divider()
 st.header("📊 Analisi Valori Assoluti (Ciclo di Vita)")
 
-NOME_FILE_EXCEL = "Comparison H2 elc FF.xlsx"
-if os.path.exists(NOME_FILE_EXCEL):
-    try:
-        xl = pd.ExcelFile(NOME_FILE_EXCEL, engine='openpyxl')
-        foglio = {"Automobile": "AUTO", "Camion Pesante": "CAMION", "Autobus Urbano": "AUTOBUS URBANO", "Autobus Extraurbano": "AUTOBUS EXTRAURBANO"}[tipo_veicolo]
-        df_raw = pd.read_excel(xl, sheet_name=foglio, header=None)
-        
-        # Filtro e pulizia
-        dati = []
-        tecs = ["Benzina", "Diesel", "Elettrico rete", "Elettrico autoprodotto", "Idrogeno Grigio", "Idrogeno rete", "Idrogeno autoprodotto"]
-        for i in range(25):
-            nome = str(df_raw.iloc[i, 1]).strip()
-            if nome in tecs:
-                dati.append({"Tecnologia": nome, "Autonomia": float(str(df_raw.iloc[i, 3]).replace(',','.')), "Consumo": float(str(df_raw.iloc[i, 4]).replace(',','.')), "Eta": float(str(df_raw.iloc[i, 9]).replace(',','.'))})
-        
-        df_abs = pd.DataFrame(dati)
-        
-        # Emissioni LCA (Fattori Utente)
-        f_emiss = {"Benzina": 0.33, "Diesel": 0.307, "Elettrico rete": 0.215, "Elettrico autoprodotto": 0.055, "Idrogeno Grigio": 0.330, "Idrogeno rete": 0.387, "Idrogeno autoprodotto": 0.090}
-        c_emiss = {"Automobile": {"Fossile": 6, "BEV": 12, "H2": 14}, "Autobus Urbano": {"Fossile": 50, "BEV": 85, "H2": 95}, "Autobus Extraurbano": {"Fossile": 50, "BEV": 85, "H2": 95}, "Camion Pesante": {"Fossile": 60, "BEV": 110, "H2": 125}}[tipo_veicolo]
-        
-        # Evoluzione Autonomia
-        m_bev = interpolate(anno_acquisto, 1.0, 1.40)
-        m_h2 = interpolate(anno_acquisto, 1.0, 1.15)
+try:
+    foglio = {"Automobile": "AUTO", "Camion Pesante": "CAMION", "Autobus Urbano": "AUTOBUS URBANO", "Autobus Extraurbano": "AUTOBUS EXTRAURBANO"}[tipo_veicolo]
+    df_raw = pd.read_excel(xl, sheet_name=foglio, header=None)
+    
+    dati = []
+    tecs = ["Benzina", "Diesel", "Elettrico rete", "Elettrico autoprodotto", "Idrogeno Grigio", "Idrogeno rete", "Idrogeno autoprodotto"]
+    
+    # Usiamo clean_val per evitare l'errore string to float
+    for i in range(2, 25): # Iniziamo dalla riga 2 per saltare gli header
+        nome = str(df_raw.iloc[i, 1]).strip()
+        if nome in tecs:
+            dati.append({
+                "Tecnologia": nome, 
+                "Autonomia": clean_val(df_raw.iloc[i, 3]), 
+                "Consumo": clean_val(df_raw.iloc[i, 4]), 
+                "Eta": clean_val(df_raw.iloc[i, 9])
+            })
+    
+    df_abs = pd.DataFrame(dati)
+    
+    # Matrice Emissioni (Fattori basati sui tuoi dati)
+    f_emiss = {
+        "Benzina": 0.066 + 0.264, "Diesel": 0.040 + 0.267, 
+        "Elettrico rete": 0.215, "Elettrico autoprodotto": 0.055, 
+        "Idrogeno Grigio": 0.330, "Idrogeno rete": 0.387, "Idrogeno autoprodotto": 0.090
+    }
+    
+    c_emiss = {
+        "Automobile": {"Fossile": 6000, "BEV": 12000, "H2": 14000},
+        "Autobus Urbano": {"Fossile": 50000, "BEV": 85000, "H2": 95000},
+        "Autobus Extraurbano": {"Fossile": 50000, "BEV": 85000, "H2": 95000},
+        "Camion Pesante": {"Fossile": 60000, "BEV": 110000, "H2": 125000}
+    }
+    
+    # Fattori manutenzione (kgCO2/km)
+    m_emiss_km = {"Fossile": 0.05, "BEV": 0.03, "H2": 0.04}
 
-        res = []
-        for idx, r in df_abs.iterrows():
-            t = r['Tecnologia']
-            cat = 'BEV' if 'Elettrico' in t else ('H2' if 'Idrogeno' in t else 'Fossile')
-            
-            # Autonomia Evoluta
-            aut = r['Autonomia'] * (m_bev if cat=='BEV' else (m_h2 if cat=='H2' else 1.0))
-            
-            # Emissioni Scomposte
-            e_prod = c_emiss[cat]
-            e_man = ({"Fossile":0.05, "BEV":0.03, "H2":0.04}[cat] * total_km_life)/1000
-            e_fuel = (r['Consumo'] * total_km_life * f_emiss[t])/1000
-            
-            res.append({"Tecnologia": t, "Autonomia": aut, "Consumo": r['Consumo'], "E_Prod": e_prod, "E_Man": e_man, "E_Fuel": e_fuel, "Eta": r['Eta']*100 if r['Eta']<2 else r['Eta']})
+    # Evoluzione Autonomia
+    m_bev = interpolate(anno_acquisto, 1.0, 1.40)
+    m_h2 = interpolate(anno_acquisto, 1.0, 1.15)
+
+    res = []
+    for idx, r in df_abs.iterrows():
+        t = r['Tecnologia']
+        cat = 'BEV' if 'Elettrico' in t else ('H2' if 'Idrogeno' in t else 'Fossile')
         
-        df_final = pd.DataFrame(res)
-        diesel_val = df_final[df_final['Tecnologia'] == ('Benzina' if tipo_veicolo=="Automobile" else 'Diesel')].iloc[0]
+        # 1. Autonomia Evoluta
+        aut_ev = r['Autonomia'] * (m_bev if cat=='BEV' else (m_h2 if cat=='H2' else 1.0))
+        
+        # 2. Emissioni Scomposte
+        e_prod = c_emiss[tipo_veicolo][cat] / 1000
+        e_man = (m_emiss_km[cat] * total_km_life) / 1000
+        e_fuel = (r['Consumo'] * total_km_life * f_emiss[t]) / 1000
+        
+        res.append({
+            "Tecnologia": t, 
+            "Autonomia": aut_ev, 
+            "Consumo": r['Consumo'], 
+            "E_Produzione": e_prod, 
+            "E_Manutenzione": e_man, 
+            "E_Carburante": e_fuel,
+            "Eta": r['Eta'] * 100 if r['Eta'] < 2 else r['Eta']
+        })
+    
+    df_final = pd.DataFrame(res)
+    baseline_tec = 'Benzina' if tipo_veicolo == "Automobile" else 'Diesel'
+    diesel_val = df_final[df_final['Tecnologia'] == baseline_tec].iloc[0]
 
-        # Plotting
-        col_g1, col_g2 = st.columns(2)
-        with col_g1:
-            st.subheader("A. Autonomia Massima [km]")
-            f1 = px.bar(df_final, x="Tecnologia", y="Autonomia", color="Tecnologia")
-            f1.add_hline(y=diesel_val['Autonomia'], line_dash="dash", line_color="black")
-            st.plotly_chart(f1, use_container_width=True)
-        with col_g2:
-            st.subheader("B. Emissioni LCA Totali [tCO2]")
-            f2 = px.bar(df_final.melt(id_vars="Tecnologia", value_vars=['E_Prod', 'E_Man', 'E_Fuel']), x="Tecnologia", y="value", color="variable", barmode='stack', color_discrete_sequence=["#8E8E8E", "#FF7F0E", "#D62728"])
-            f2.add_hline(y=diesel_val['E_Prod']+diesel_val['E_Man']+diesel_val['E_Fuel'], line_dash="dash", line_color="black")
-            st.plotly_chart(f2, use_container_width=True)
+    # Plotting Valori Assoluti
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        st.subheader("A. Autonomia Massima [km]")
+        f1 = px.bar(df_final, x="Tecnologia", y="Autonomia", color="Tecnologia", text_auto='.0f')
+        f1.add_hline(y=diesel_val['Autonomia'], line_dash="dash", line_color="black", annotation_text="Baseline Fossile")
+        st.plotly_chart(f1, use_container_width=True)
+        
+    with col_g2:
+        st.subheader("B. Emissioni LCA Totali [tCO2]")
+        df_melt = df_final.melt(id_vars="Tecnologia", value_vars=['E_Produzione', 'E_Manutenzione', 'E_Carburante'], var_name="Fase", value_name="tCO2")
+        f2 = px.bar(df_melt, x="Tecnologia", y="tCO2", color="Fase", barmode='stack', 
+                    color_discrete_sequence=["#8E8E8E", "#FF7F0E", "#D62728"])
+        tot_fossile = diesel_val['E_Produzione'] + diesel_val['E_Manutenzione'] + diesel_val['E_Carburante']
+        f2.add_hline(y=tot_fossile, line_dash="dash", line_color="black", annotation_text="Totale Fossile")
+        st.plotly_chart(f2, use_container_width=True)
 
-    except Exception as e:
-        st.error(f"Errore caricamento dati Excel: {e}")
+except Exception as e:
+    st.error(f"Errore caricamento dati Excel: {e}")
