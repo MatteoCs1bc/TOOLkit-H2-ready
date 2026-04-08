@@ -85,8 +85,12 @@ costo_fc = interpolate(anno_acquisto, 330, 210)
 prezzo_h2_sim = interpolate(anno_acquisto, prezzo_h2_base, 8.0)
 prezzo_el_sim = interpolate(anno_acquisto, prezzo_el_base, prezzo_el_base * 0.9)
 
+# Fattore di conversione realistico (kWh -> kg H2) per il simulatore in alto
+conv_factor = 20.0 if tipo_veicolo == "Automobile" else 15.0
+cons_h2_kg_km = cons_reale_bev / conv_factor
+
 tco_bev = (p["glider"] + fabbisogno_kwh * costo_batt) + (total_km_life * (cons_reale_bev * prezzo_el_sim + p["maint_bev"]))
-tco_h2 = (p["glider"] + p["fc_kw"] * costo_fc + p["tank_cost"]) + (total_km_life * ((cons_reale_bev/15.0) * prezzo_h2_sim + p["maint_h2"]))
+tco_h2 = (p["glider"] + p["fc_kw"] * costo_fc + p["tank_cost"]) + (total_km_life * (cons_h2_kg_km * prezzo_h2_sim + p["maint_h2"]))
 
 prezzo_f_base = prezzo_benzina if tipo_veicolo == "Automobile" else prezzo_diesel
 tco_fossile = (p["glider"] * 0.8) + (total_km_life * (p["cons_fossile"] * mult_env * prezzo_f_base + p["maint_fossile"]))
@@ -107,7 +111,7 @@ else:
     vince_h2 = "🔴 CRITICO" in sem_peso or "🔴 CRITICO" in sem_tempo or tco_h2 < (tco_bev * 0.9)
     if vince_h2: 
         st.error("### 🔵 L'IDROGENO È LA SCELTA STRATEGICA MIGLIORE")
-        st.write("L'elettrico a batterie fallisce i requisiti minimi di operatività fisica (limiti di peso del veicolo o tempi di ricarica troppo lenti per coprire i turni) o risulta troppo costoso a causa dei mega-pacchi batteria necessari.")
+        st.write("L'elettrico a batterie fallisce i requisiti minimi di operatività fisica (limiti di peso o tempi di ricarica lenti) o risulta troppo costoso a causa dei mega-pacchi batteria necessari.")
     else: 
         st.success("### 🟢 L'ELETTRICO (BEV) È FATTIBILE E PIÙ ECONOMICO")
         st.write("Nonostante le difficoltà, la tecnologia a batteria riesce a coprire la missione richiesta nei tempi previsti, offrendo un Costo Totale (TCO) inferiore.")
@@ -164,11 +168,11 @@ try:
     c_emiss = {"Automobile": {"Fossile": 6000, "BEV": 12000, "H2": 14000}, "Autobus Urbano": {"Fossile": 50000, "BEV": 85000, "H2": 95000}, "Autobus Extraurbano": {"Fossile": 50000, "BEV": 85000, "H2": 95000}, "Camion Pesante": {"Fossile": 60000, "BEV": 110000, "H2": 125000}}
     m_emiss_km = {"Fossile": 0.05, "BEV": 0.03, "H2": 0.04}
     
-    # Prezzi standardizzati per il grafico TCO globale
+    # PREZZI STANDARDIZZATI CORRETTI (Dinamici in base agli input utente)
     prezzi_std = {
         "Benzina": prezzo_benzina, "Diesel": prezzo_diesel,
-        "Elettrico rete": 0.22, "Elettrico autoprodotto": 0.08,
-        "Idrogeno Grigio": 10.0, "Idrogeno rete": prezzo_h2_base, "Idrogeno autoprodotto": (55 * 0.08) + 2.5
+        "Elettrico rete": prezzo_el_base, "Elettrico autoprodotto": prezzo_el_base * 0.4, # Proxy costo fotovoltaico
+        "Idrogeno Grigio": 10.0, "Idrogeno rete": prezzo_h2_base, "Idrogeno autoprodotto": (55.0 * prezzo_el_base) + 2.5
     }
 
     m_bev = interpolate(anno_acquisto, 1.0, 1.40)
@@ -192,9 +196,8 @@ try:
         
         mnt = p[f"maint_{cat.lower()}"] * total_km_life
         
-        if t in ["Benzina", "Diesel"]: fuel_cost = (p["cons_fossile"] * mult_env) * prezzi_std[t] * total_km_life
-        elif cat == 'BEV': fuel_cost = cons_reale_bev * prezzi_std[t] * total_km_life
-        elif cat == 'H2': fuel_cost = (cons_reale_bev / 15.0) * prezzi_std[t] * total_km_life
+        # FIX COSTO CARBURANTE: Usa il consumo esatto dal file Excel!
+        fuel_cost = r['Consumo'] * prezzi_std.get(t, 0) * total_km_life
         
         res.append({
             "Tecnologia": t, "Categoria_Base": "Elettrico (BEV)" if cat == 'BEV' else ("Idrogeno (FCEV)" if cat == 'H2' else t),
@@ -205,7 +208,7 @@ try:
     
     df_final = pd.DataFrame(res)
     
-    # Filtro base per Autonomia e Consumo (mostra solo Benzina/Diesel, BEV, H2)
+    # Filtro base per Autonomia e Consumo
     baseline_tec = 'Benzina' if tipo_veicolo == "Automobile" else 'Diesel'
     df_base = df_final[df_final['Categoria_Base'].isin([baseline_tec, 'Elettrico (BEV)', 'Idrogeno (FCEV)'])].drop_duplicates(subset=['Categoria_Base'])
     diesel_val = df_final[df_final['Tecnologia'] == baseline_tec].iloc[0]
@@ -220,7 +223,7 @@ try:
         st.plotly_chart(f1, use_container_width=True)
         
     with col_g2:
-        st.subheader("B. Consumo [kWh/km]")
+        st.subheader("B. Consumo [kWh/km, l/km, kg/km]")
         f2 = px.bar(df_base, x="Categoria_Base", y="Consumo", color="Categoria_Base", text_auto='.2f')
         f2.add_hline(y=diesel_val['Consumo'], line_dash="dash", line_color="black")
         f2.update_layout(showlegend=False, xaxis_title="")
@@ -242,9 +245,9 @@ try:
         f4.add_hline(y=(diesel_val['E_Produzione'] + diesel_val['E_Manutenzione'] + diesel_val['E_Carburante']), line_dash="dash", line_color="black")
         st.plotly_chart(f4, use_container_width=True)
 
-    # NUOVO GRAFICO: TCO Spacchettato per tutte le tecnologie
+    # TCO Spacchettato per tutte le tecnologie
     st.divider()
-    st.subheader("E. Costo Totale di Proprietà Spacchettato (Tutte le Tecnologie) [€]")
+    st.subheader("E. Costo Totale di Proprietà Spacchettato [€]")
     df_melt_c = df_final.melt(id_vars="Tecnologia", value_vars=['Costo_Veicolo', 'Costo_Manutenzione', 'Costo_Carburante'], var_name="Voce", value_name="Euro")
     df_melt_c['Voce'] = df_melt_c['Voce'].replace({'Costo_Veicolo': 'Acquisto Mezzo (CAPEX)', 'Costo_Manutenzione': 'Manutenzione (OPEX)', 'Costo_Carburante': 'Carburante (OPEX)'})
     
