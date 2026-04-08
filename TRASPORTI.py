@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 
 # --- CONFIGURAZIONE PAGINA ---
@@ -45,16 +44,16 @@ with st.sidebar:
     tempo_inattivita = st.slider("Finestra max per Ricarica (Ore)", 0.5, 12.0, 5.0, 0.5)
     
     st.header("2. Costi Energetici Iniziali (2024)")
-    p_in_benzina = st.number_input("Benzina (€/l)", value=1.85, format="%.2f") if tipo_veicolo == "Automobile" else 0.0
-    p_in_diesel = st.number_input("Diesel (€/l)", value=1.75, format="%.2f")
-    p_in_el_rete = st.number_input("Elettricità Rete (€/kWh)", value=0.22, format="%.3f")
-    p_in_el_fv = st.number_input("Elettricità FV (€/kWh)", value=0.08, format="%.3f")
-    p_in_h2_rete = st.number_input("H2 da Rete (€/kg)", value=16.0, format="%.2f")
-    p_in_h2_fv = st.number_input("H2 Autoprodotto (€/kg)", value=6.50, format="%.2f")
+    # Valori allineati ai costi impliciti del tuo file Excel
+    p_in_benzina = st.number_input("Benzina (€/l)", value=1.90, format="%.2f") if tipo_veicolo == "Automobile" else 0.0
+    p_in_diesel = st.number_input("Diesel (€/l)", value=1.80, format="%.2f")
+    p_in_el_rete = st.number_input("Elettricità Rete (€/kWh)", value=0.31, format="%.3f")
+    p_in_el_fv = st.number_input("Elettricità FV (€/kWh)", value=0.24, format="%.3f")
+    p_in_h2_rete = st.number_input("H2 da Rete (€/kg)", value=20.00, format="%.2f")
+    p_in_h2_fv = st.number_input("H2 Autoprodotto (€/kg)", value=15.00, format="%.2f")
 
     st.header("3. Proiezioni Tecnologiche")
     anno_acquisto = st.slider("Anno Previsto di Acquisto", 2024, 2035, 2024)
-    # Portato a 30 anni come richiesto
     anni_utilizzo = st.slider("Ciclo di Vita Utile (Anni)", 5, 30, 10) 
 
 km_annui = km_giornalieri * giorni_operativi
@@ -79,13 +78,13 @@ for i in range(2, min(30, len(df_raw))):
     if nome in tecs:
         dati.append({
             "Tecnologia": nome, 
-            "Autonomia": clean_val(df_raw.iloc[i, 3]),       # D: Autonomia
-            "Consumo": clean_val(df_raw.iloc[i, 4]),         # E: Consumo kWh/km
-            "Eta": clean_val(df_raw.iloc[i, 9]),             # J: Efficienza WtW
-            "Emiss_WtW_anno": clean_val(df_raw.iloc[i, 16]), # Q: Emissioni WtW [kgCO2/anno base]
-            "Emiss_Costruz": clean_val(df_raw.iloc[i, 17]),  # R: Emissioni Costruzione [kgCO2]
-            "OPEX_Maint_km": clean_val(df_raw.iloc[i, 22]),  # W: OPEX Maint [€/km]
-            "CAPEX": clean_val(df_raw.iloc[i, 25])           # Z: CAPEX [€]
+            "Autonomia": clean_val(df_raw.iloc[i, 3]),       # D
+            "Consumo": clean_val(df_raw.iloc[i, 4]),         # E
+            "Eta": clean_val(df_raw.iloc[i, 9]),             # J
+            "Emiss_WtW_anno": clean_val(df_raw.iloc[i, 16]), # Q 
+            "Emiss_Costruz": clean_val(df_raw.iloc[i, 17]),  # R 
+            "OPEX_Maint_km": clean_val(df_raw.iloc[i, 22]),  # W 
+            "CAPEX": clean_val(df_raw.iloc[i, 25])           # Z 
         })
 
 df_abs = pd.DataFrame(dati)
@@ -96,11 +95,13 @@ if df_abs.empty:
 # ==========================================
 # 3. MOTORE DI CALCOLO DINAMICO
 # ==========================================
+# Poteri calorifici base (kWh per litro o kg)
 conv_factors = {"Benzina": 8.76, "Diesel": 9.91, "Idrogeno": 33.33, "Elettrico": 1.0}
+
 m_bev_auto = interpolate(anno_acquisto, 1.0, 1.40) # +40% autonomia al 2030
 m_h2_auto = interpolate(anno_acquisto, 1.0, 1.15)  # +15% autonomia al 2030
 
-# Proiezioni Riduzione Costo CAPEX (Sconto rispetto ai valori dell'Excel)
+# Proiezioni Riduzione Costo CAPEX 
 fabbisogno_kwh = km_giornalieri * df_abs[df_abs['Tecnologia'] == 'Elettrico rete']['Consumo'].values[0] * 1.15
 fc_kw_stima = {"Automobile": 100, "Autobus Urbano": 200, "Autobus Extraurbano": 200, "Camion Pesante": 300}[tipo_veicolo]
 delta_batt_capex = fabbisogno_kwh * (interpolate(anno_acquisto, 210, 100) - 210)
@@ -111,28 +112,28 @@ for idx, r in df_abs.iterrows():
     t = r['Tecnologia']
     cat = 'BEV' if 'Elettrico' in t else ('H2' if 'Idrogeno' in t else 'Fossile')
     
-    # 1. Prezzi Dinamici Carburante (Input Utente + Trend al 2030)
+    # 1. Prezzi Dinamici Carburante (Applica trend futuri agli input 2024)
     if t == "Benzina": p_sim = p_in_benzina * interpolate(anno_acquisto, 1.0, 1.1)
     elif t == "Diesel": p_sim = p_in_diesel * interpolate(anno_acquisto, 1.0, 1.1)
     elif t == "Elettrico rete": p_sim = p_in_el_rete * interpolate(anno_acquisto, 1.0, 0.9)
     elif t == "Elettrico autoprodotto": p_sim = p_in_el_fv * interpolate(anno_acquisto, 1.0, 0.9)
-    elif t == "Idrogeno Grigio": p_sim = p_in_h2_rete * interpolate(anno_acquisto, 1.0, 0.8)
+    elif t == "Idrogeno Grigio": p_sim = 2.0 * interpolate(anno_acquisto, 1.0, 0.8) # Mantenuto a 2€ come nel tuo Excel
     elif t == "Idrogeno rete": p_sim = p_in_h2_rete * interpolate(anno_acquisto, 1.0, 0.6)
     elif t == "Idrogeno autoprodotto": p_sim = p_in_h2_fv * interpolate(anno_acquisto, 1.0, 0.7)
     else: p_sim = 0.0
 
-    # 2. Emissioni (Estratte rigorosamente da Cella R e Q)
+    # 2. Fisica ed Emissioni 
     aut_ev = r['Autonomia'] * (m_bev_auto if cat=='BEV' else (m_h2_auto if cat=='H2' else 1.0))
     e_prod = r['Emiss_Costruz'] / 1000 
-    # Le emissioni operative dell'Excel sono calcolate su 15.000 km. Le scompongo al km e moltiplico per la vita reale.
     e_fuel = (r['Emiss_WtW_anno'] / 15000.0) * total_km_life / 1000.0
     
-    # 3. Economia (Estratta da W e Z, ricalcolata per Fuel)
+    # 3. Economia 
     divisore = conv_factors["Elettrico"]
     if "Benzina" in t: divisore = conv_factors["Benzina"]
     elif "Diesel" in t: divisore = conv_factors["Diesel"]
     elif "Idrogeno" in t: divisore = conv_factors["Idrogeno"]
 
+    # Converte il kWh/km in Litri/km o Kg/km e moltiplica per gli €/Litri o €/Kg
     consumo_naturale = r['Consumo'] / divisore
     fuel_cost = (consumo_naturale * total_km_life) * p_sim
     mnt_cost = r['OPEX_Maint_km'] * total_km_life
@@ -222,7 +223,7 @@ with col_g1:
     st.plotly_chart(f1, use_container_width=True)
     
 with col_g2:
-    st.subheader("B. Consumo [kWh/km]")
+    st.subheader("B. Consumo Fisico [kWh/km]")
     f2 = px.bar(df_base, x="Categoria_Base", y="Consumo", color="Categoria_Base", text_auto='.2f')
     f2.add_hline(y=diesel_val['Consumo'], line_dash="dash", line_color="black")
     f2.update_layout(showlegend=False, xaxis_title="")
@@ -239,12 +240,11 @@ with col_g3:
 with col_g4:
     st.subheader("D. Emissioni LCA Totali [tCO2]")
     df_melt_e = df_final.melt(id_vars="Tecnologia", value_vars=['E_Produzione', 'E_Carburante'], var_name="Fase", value_name="tCO2")
-    df_melt_e['Fase'] = df_melt_e['Fase'].replace({'E_Produzione': 'Costruzione', 'E_Carburante': 'Carburante (Uso)'})
+    df_melt_e['Fase'] = df_melt_e['Fase'].replace({'E_Produzione': 'Costruzione', 'E_Carburante': 'Carburante/Uso'})
     f4 = px.bar(df_melt_e, x="Tecnologia", y="tCO2", color="Fase", barmode='stack', color_discrete_sequence=["#8E8E8E", "#D62728"])
     f4.add_hline(y=(diesel_val['E_Produzione'] + diesel_val['E_Carburante']), line_dash="dash", line_color="black")
     st.plotly_chart(f4, use_container_width=True)
 
-# Grafico TCO per tutte le Tecnologie
 st.divider()
 st.subheader("E. Costo Totale di Proprietà (TCO) Spacchettato [€]")
 df_melt_c = df_final.melt(id_vars="Tecnologia", value_vars=['Costo_Veicolo', 'Costo_Manutenzione', 'Costo_Carburante'], var_name="Voce", value_name="Euro")
