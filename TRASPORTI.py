@@ -7,21 +7,26 @@ import os
 st.set_page_config(page_title="DSS Mobilità Comuni", page_icon="🚗", layout="wide")
 st.title("🚗 DSS Comuni: Analisi Completa Flotta")
 
-# Legge il file README.md e lo visualizza in un menu a tendina
+# Legge il file README.md (se presente nella cartella del repository)
 if os.path.exists("REadMe_Mezzi.md"):
     with st.expander("ℹ️ Leggi Istruzioni, Limiti e Assunzioni"):
         with open("REadMe_Mezzi.md", "r", encoding="utf-8") as f:
             st.markdown(f.read())
 
-NOME_FILE_EXCEL = "Comparison H2 elc FF.xlsx" 
+# --- 1. LETTURA DEL DATABASE DAL REPOSITORY ---
+NOME_FILE_EXCEL = "Comparison H2 elc FF.xlsx"
 
 if not os.path.exists(NOME_FILE_EXCEL):
-    st.error(f"❌ File '{NOME_FILE_EXCEL}' non trovato.")
+    st.error(f"❌ File '{NOME_FILE_EXCEL}' non trovato. Assicurati di aver caricato il file Excel nel repository GitHub nella stessa cartella dell'app.")
     st.stop()
 
+# --- 2. ELABORAZIONE DATI ---
 try:
+    # Legge il file direttamente dal server/repository
     xl = pd.ExcelFile(NOME_FILE_EXCEL, engine='openpyxl')
-    categoria_utente = st.sidebar.selectbox("🚌 Seleziona Flotta", ["AUTO", "CAMION", "AUTOBUS URBANO", "AUTOBUS EXTRAURBANO"])
+    
+    st.sidebar.header("📂 Selezione Flotta")
+    categoria_utente = st.sidebar.selectbox("🚌 Scegli la categoria di veicolo", ["AUTO", "CAMION", "AUTOBUS URBANO", "AUTOBUS EXTRAURBANO"])
     nome_foglio = next((f for f in xl.sheet_names if f.upper() == categoria_utente), xl.sheet_names[0])
     
     df_raw = pd.read_excel(xl, sheet_name=nome_foglio, header=None, engine='openpyxl')
@@ -32,7 +37,7 @@ try:
         try: return float(s)
         except: return 0.0
 
-    # --- 1. ESTRAZIONE DATI BASE (Le tue 7 Tecnologie!) ---
+    # --- ESTRAZIONE DATI BASE (Le tue 7 Tecnologie!) ---
     dati_finali = []
     tecnologie_cercate = ["Benzina", "Diesel", "Elettrico rete", "Elettrico autoprodotto", 
                           "Idrogeno Grigio", "Idrogeno rete", "Idrogeno autoprodotto"]
@@ -58,14 +63,14 @@ try:
                 continue
 
     if not dati_finali:
-        st.error("Nessun dato trovato.")
+        st.error(f"Nessun dato valido trovato nel foglio '{nome_foglio}'.")
         st.stop()
 
     df_clean = pd.DataFrame(dati_finali)
     df_clean['Tecnologia'] = pd.Categorical(df_clean['Tecnologia'], categories=tecnologie_cercate, ordered=True)
     df_clean = df_clean.sort_values('Tecnologia')
 
-    # --- 2. LETTURA COSTI FUEL E CONVERSIONE (B20:F26) ---
+    # --- LETTURA COSTI FUEL E CONVERSIONE ---
     st.sidebar.divider()
     st.sidebar.header("⚡ Costi Carburante")
     
@@ -96,7 +101,7 @@ try:
             else:
                 if "benzina" in match_label.lower(): fattore = 0.22 / 1.9
                 elif "diesel" in match_label.lower(): fattore = 0.18 / 1.8
-                elif "idrogeno" in match_label.lower(): fattore = 0.03 # 0.06/2
+                elif "idrogeno" in match_label.lower(): fattore = 0.03 
                 else: fattore = 1.0
                 
             etichetta_ui = f"{match_label} {get_unit(match_label)}"
@@ -106,9 +111,9 @@ try:
         except:
             pass
 
-    # --- 3. PARAMETRI UTENTE ---
+    # --- PARAMETRI UTENTE ---
     st.sidebar.divider()
-    st.sidebar.header("⚙️ Parametri Flotta (C16, C17)")
+    st.sidebar.header("⚙️ Parametri Flotta")
     
     km_annui = st.sidebar.slider("Percorrenza Annua (km/y)", 5000, 100000, 15000, step=1000)
     lifetime = st.sidebar.slider("Anni di Utilizzo (y)", 1, 20, 10, step=1)
@@ -118,7 +123,7 @@ try:
     
     KM_BASE_EXCEL = 15000 
 
-    # --- 4. IL MOTORE MATEMATICO ---
+    # --- IL MOTORE MATEMATICO ---
     def esegui_calcoli(row):
         t = row["Tecnologia"]
         p_fuel = next((v for k, v in costi_input_kwh.items() if k.lower() in t.lower()), 0.20)
@@ -148,7 +153,7 @@ try:
               'OPEx_Fuel_Tot', 'OPEx_Maint_Tot', 'Costo_Totale',
               'En_Primaria_y', 'Emiss_Annue', 'Emiss_Tot_Tons']] = df_clean.apply(esegui_calcoli, axis=1)
 
-    # --- 5. VISUALIZZAZIONE RISULTATI BASE ---
+    # --- VISUALIZZAZIONE RISULTATI BASE ---
     st.divider()
     st.header("📊 Analisi Parametri Principali")
     
@@ -194,8 +199,7 @@ try:
                       color_discrete_sequence=["#0068C9", "#FFA421", "#FF4B4B"])
         st.plotly_chart(fig8, use_container_width=True)
 
-
-    # --- 6. CONFRONTO DIRETTO VS DIESEL (BASELINE) ---
+    # --- CONFRONTO DIRETTO VS DIESEL (BASELINE) ---
     st.divider()
     st.header("🆚 Confronto Diretto vs DIESEL (Baseline)")
     st.write("I grafici sottostanti mostrano lo **scostamento (Delta)** delle diverse tecnologie rispetto al veicolo Diesel. Una barra positiva indica un valore superiore al Diesel, una barra negativa indica un valore inferiore (risparmio o riduzione).")
@@ -203,13 +207,11 @@ try:
     if not df_clean[df_clean['Tecnologia'] == 'Diesel'].empty:
         diesel_data = df_clean[df_clean['Tecnologia'] == 'Diesel'].iloc[0]
 
-        # Calcolo dei Delta matematici rispetto al Diesel
         df_clean['Delta_Autonomia'] = df_clean['Autonomia'] - diesel_data['Autonomia']
         df_clean['Delta_Consumo'] = df_clean['Consumo'] - diesel_data['Consumo']
         df_clean['Delta_Eta'] = df_clean['Eta_Percent'] - (diesel_data['Eta_WtW'] * 100 if diesel_data['Eta_WtW'] < 2 else diesel_data['Eta_WtW'])
         df_clean['Delta_Emiss'] = df_clean['Emiss_Tot_Tons'] - diesel_data['Emiss_Tot_Tons']
 
-        # Grafici Autonomia e Consumo
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             st.subheader("A. Scostamento Autonomia [km]")
@@ -225,7 +227,6 @@ try:
             fig_dc.update_layout(yaxis_title="kWh/km di differenza vs Diesel", showlegend=False)
             st.plotly_chart(fig_dc, use_container_width=True)
 
-        # Grafici Efficienza ed Emissioni Dettagliate
         col_d3, col_d4 = st.columns(2)
         with col_d3:
             st.subheader("C. Delta Efficienza (WtW) [%]")
@@ -236,7 +237,6 @@ try:
 
         with col_d4:
             st.subheader("D. Scomposizione Emissioni (CAPEX vs OPEX) [tCO2]")
-            # Creazione dataset impilato per le emissioni
             df_clean['Emiss_Costruzione_Tons'] = df_clean['Emiss_Costruz'] / 1000
             df_clean['Emiss_Operative_Tons'] = (df_clean['Emiss_Annue'] * lifetime) / 1000
             
@@ -247,9 +247,8 @@ try:
                                                          'Emiss_Operative_Tons': 'Carburante e Uso (OPEX)'})
 
             fig_dem = px.bar(df_emiss, x="Tecnologia", y="tCO2", color="Fase", barmode='stack',
-                             color_discrete_sequence=["#8E8E8E", "#D62728"]) # Grigio per costruzione, Rosso per carburante
+                             color_discrete_sequence=["#8E8E8E", "#D62728"])
             
-            # Linea di riferimento delle emissioni totali del Diesel
             fig_dem.add_hline(y=diesel_data['Emiss_Tot_Tons'], line_dash="dash", line_width=2, 
                               line_color="black", annotation_text=f"Totale Diesel ({diesel_data['Emiss_Tot_Tons']:.0f} tCO2)")
             fig_dem.update_layout(yaxis_title="Tonnellate CO2 Totali (Ciclo di Vita)")
@@ -270,4 +269,4 @@ try:
     }), use_container_width=True)
 
 except Exception as e:
-    st.error(f"Errore di Elaborazione: {e}")
+    st.error(f"Errore di Elaborazione: Assicurati che l'Excel contenga i fogli e le intestazioni previste. Dettaglio tecnico: {e}")
