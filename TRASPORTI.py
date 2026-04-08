@@ -1,272 +1,231 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import os
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="DSS Mobilità Comuni", page_icon="🚗", layout="wide")
-st.title("🚗 DSS Comuni: Analisi Completa Flotta")
+st.set_page_config(page_title="DSS Mobilità - Convenience Check", layout="wide")
+st.title("🚛 H2READY: TPL & Logistica Convenience Check")
+st.markdown("Simulatore dinamico **Elettrico (BEV) vs Idrogeno (FCEV)** basato sui limiti fisici e proiezioni di mercato, integrato con analisi emissioni.")
 
-# Legge il file README.md (se presente nella cartella del repository)
 if os.path.exists("REadMe_Mezzi.md"):
     with st.expander("ℹ️ Leggi Istruzioni, Limiti e Assunzioni"):
         with open("REadMe_Mezzi.md", "r", encoding="utf-8") as f:
             st.markdown(f.read())
 
-# --- 1. LETTURA DEL DATABASE DAL REPOSITORY ---
+# --- FUNZIONI DI INTERPOLAZIONE ---
+def interpolate(year, y_2024, y_2030):
+    if year <= 2024: return y_2024
+    if year >= 2030: return y_2030
+    return y_2024 + (y_2030 - y_2024) * ((year - 2024) / (2030 - 2024))
+
+# --- INTERFACCIA UTENTE (SIDEBAR) ---
+with st.sidebar:
+    st.header("1. Parametri di Missione")
+    tipo_veicolo = st.selectbox("Tipo Veicolo", ["Autobus Urbano", "Autobus Extraurbano", "Camion Pesante"])
+    km_giornalieri = st.slider("Percorrenza Giornaliera (km)", 50, 1000, 250, 10)
+    tempo_inattivita = st.slider("Finestra max per Ricarica (Ore continue)", 0.5, 12.0, 5.0, 0.5)
+    
+    st.header("2. Condizioni Ambientali")
+    orografia = st.selectbox("Orografia del percorso", ["Pianura", "Collinare", "Montagna"])
+    inverno_rigido = st.checkbox("Clima Invernale Rigido (< 0°C)")
+    
+    st.header("3. Approvvigionamento Energia")
+    fonte_elettricita = st.radio("Sorgente Elettricità (BEV e Elettrolizzatore)", ["Da Rete Pubblica", "Autoprodotta (es. FV Deposito)"])
+    prezzo_el_base = st.number_input("Prezzo Elettricità (€/kWh)", value=0.22 if "Rete" in fonte_elettricita else 0.08, format="%.3f")
+    
+    fonte_idrogeno = st.radio("Sorgente Idrogeno (FCEV)", ["Acquisto Esterno (Carro Bombolaio)", "Autoprodotto (Elettrolizzatore locale)"])
+    
+    if "Esterno" in fonte_idrogeno:
+        prezzo_h2_base = st.number_input("Prezzo Mercato H2 oggi (€/kg)", value=16.0, format="%.2f")
+    else:
+        st.info(f"💡 **Modello 55 kWh/kg**: {prezzo_el_base * 55:.2f} €/kg (Solo energia) + CSD.")
+
+    st.header("4. Proiezioni Future")
+    anno_acquisto = st.slider("Anno Previsto di Acquisto", 2024, 2035, 2024)
+    anni_utilizzo = st.slider("Ciclo di Vita Utile (Anni)", 5, 15, 10)
+
+# ==========================================
+# PARTE 1: MOTORE FISICO & DASHBOARD TCO (BEV vs H2)
+# ==========================================
+consumo_base_bev = {"Autobus Urbano": 1.1, "Autobus Extraurbano": 1.0, "Camion Pesante": 1.4}
+limite_peso_tollerato = {"Autobus Urbano": 3000, "Autobus Extraurbano": 4000, "Camion Pesante": 4500}
+
+mult_oro = {"Pianura": 1.0, "Collinare": 1.25, "Montagna": 1.45}
+mult_inverno = 1.25 if inverno_rigido else 1.0
+
+densita_batt = interpolate(anno_acquisto, 0.16, 0.256) 
+deroga_peso_ue = interpolate(anno_acquisto, 2000, 4000) 
+potenza_ricarica = 1000 if anno_acquisto >= 2028 else 150 
+
+consumo_reale_kwh_km = consumo_base_bev[tipo_veicolo] * mult_oro[orografia] * mult_inverno
+fabbisogno_kwh = km_giornalieri * consumo_reale_kwh_km * 1.15 
+peso_batteria = fabbisogno_kwh / densita_batt
+peso_netto_perso = max(0, peso_batteria - deroga_peso_ue)
+tempo_ricarica_h = fabbisogno_kwh / potenza_ricarica
+
+costo_batt_kwh = interpolate(anno_acquisto, 210, 100) 
+costo_fc_kw = interpolate(anno_acquisto, 330, 210) 
+costo_kwh_el_stimato = interpolate(anno_acquisto, prezzo_el_base, prezzo_el_base * 0.9)
+
+if "Esterno" in fonte_idrogeno:
+    costo_kg_h2_stimato = interpolate(anno_acquisto, prezzo_h2_base, 9.0)
+else:
+    costo_energia_per_kg = 55.0 * costo_kwh_el_stimato
+    ammortamento_impianto_csd = interpolate(anno_acquisto, 4.0, 2.5) 
+    costo_kg_h2_stimato = costo_energia_per_kg + ammortamento_impianto_csd
+
+km_annui = km_giornalieri * 300
+capex_bev = 150000 + (fabbisogno_kwh * costo_batt_kwh)
+capex_h2 = 150000 + (200 * costo_fc_kw) + 35000
+
+opex_fuel_bev = km_annui * consumo_reale_kwh_km * costo_kwh_el_stimato * anni_utilizzo
+consumo_h2_kg_km = consumo_reale_kwh_km / 15.0 
+opex_fuel_h2 = km_annui * consumo_h2_kg_km * costo_kg_h2_stimato * anni_utilizzo
+
+opex_maint_bev = km_annui * 0.15 * anni_utilizzo
+opex_maint_h2 = km_annui * 0.25 * anni_utilizzo
+
+tco_bev = capex_bev + opex_fuel_bev + opex_maint_bev
+tco_h2 = capex_h2 + opex_fuel_h2 + opex_maint_h2
+
+delta_capex = capex_h2 - capex_bev
+delta_fuel = opex_fuel_h2 - opex_fuel_bev
+delta_maint = opex_maint_h2 - opex_maint_bev
+delta_tco_totale = tco_h2 - tco_bev
+
+sem_peso = "🟢 OK" if peso_netto_perso <= limite_peso_tollerato[tipo_veicolo] * 0.7 else ("🟡 ATTENZIONE" if peso_netto_perso <= limite_peso_tollerato[tipo_veicolo] else "🔴 CRITICO")
+sem_tempo = "🟢 OK" if tempo_ricarica_h <= tempo_inattivita * 0.8 else ("🟡 ATTENZIONE" if tempo_ricarica_h <= tempo_inattivita else "🔴 CRITICO")
+
+if tipo_veicolo == "Autobus Urbano" and km_giornalieri <= 200:
+    st.success("### 🟢 VERDETTO IMMEDIATO: VANTAGGIO ASSOLUTO BEV (Elettrico)")
+    st.write("Per percorsi urbani inferiori a 200 km, i veicoli a batteria hanno già raggiunto la parità economica e tecnica.")
+else:
+    st.subheader("📋 Verdetto di Fattibilità Operativa")
+    vince_h2 = "🔴 CRITICO" in sem_peso or "🔴 CRITICO" in sem_tempo or tco_h2 < (tco_bev * 0.9)
+    if vince_h2: st.error("### 🔵 L'IDROGENO È LA SCELTA STRATEGICA MIGLIORE")
+    else: st.success("### 🟢 L'ELETTRICO (BEV) È FATTIBILE E PIÙ ECONOMICO")
+
+    st.markdown("### 🚦 Analisi dei Colli di Bottiglia Elettrici (BEV)")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"**⚖️ Carico Utile (Payload)**\n\nStato: **{sem_peso}**")
+        st.write(f"Peso Batteria Richiesta: **{peso_batteria:,.0f} kg**")
+    with col2:
+        st.info(f"**⏱️ Tempi di Ricarica**\n\nStato: **{sem_tempo}**")
+        st.write(f"Tempo Necessario: **{tempo_ricarica_h:.1f} ore**")
+
+    st.markdown("### 💶 Analisi degli Scostamenti Economici (Delta TCO)")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("TCO Elettrico (BEV)", f"€ {tco_bev:,.0f}")
+    c2.metric("TCO Idrogeno (FCEV)", f"€ {tco_h2:,.0f}")
+    c3.metric("Delta TCO (Extra-costo H2)", f"€ {delta_tco_totale:,.0f}", delta=f"{delta_tco_totale:,.0f} € rispetto a BEV", delta_color="inverse" if delta_tco_totale > 0 else "normal")
+    c4.metric("Prezzi Energia Simulati", f"{costo_kwh_el_stimato:.2f} €/kWh", f"{costo_kg_h2_stimato:.2f} €/kg H2", delta_color="off")
+
+    fig_waterfall = go.Figure(go.Waterfall(
+        name = "20", orientation = "v", measure = ["relative", "relative", "relative", "total"],
+        x = ["Delta CAPEX (Veicolo)", "Delta Energia (Fuel)", "Delta Manutenzione", "Delta TCO Totale"],
+        textposition = "outside",
+        text = [f"€ {delta_capex:,.0f}", f"€ {delta_fuel:,.0f}", f"€ {delta_maint:,.0f}", f"€ {delta_tco_totale:,.0f}"],
+        y = [delta_capex, delta_fuel, delta_maint, delta_tco_totale],
+        connector = {"line":{"color":"rgb(63, 63, 63)"}},
+        decreasing = {"marker":{"color":"#2ca02c"}}, increasing = {"marker":{"color":"#d62728"}}, totals = {"marker":{"color":"#1f77b4"}}
+    ))
+    st.plotly_chart(fig_waterfall, use_container_width=True)
+
+# ==========================================
+# PARTE 2: CONFRONTO GLOBALE VS DIESEL (DA EXCEL)
+# ==========================================
+st.divider()
+st.header("🆚 Confronto di Tutte le Tecnologie vs DIESEL (Baseline)")
+st.write("I grafici sottostanti estraggono i dati base dal file Excel e mostrano lo scostamento delle diverse motorizzazioni rispetto al Diesel tradizionale.")
+
 NOME_FILE_EXCEL = "Comparison H2 elc FF.xlsx"
-
 if not os.path.exists(NOME_FILE_EXCEL):
-    st.error(f"❌ File '{NOME_FILE_EXCEL}' non trovato. Assicurati di aver caricato il file Excel nel repository GitHub nella stessa cartella dell'app.")
-    st.stop()
-
-# --- 2. ELABORAZIONE DATI ---
-try:
-    # Legge il file direttamente dal server/repository
-    xl = pd.ExcelFile(NOME_FILE_EXCEL, engine='openpyxl')
-    
-    st.sidebar.header("📂 Selezione Flotta")
-    categoria_utente = st.sidebar.selectbox("🚌 Scegli la categoria di veicolo", ["AUTO", "CAMION", "AUTOBUS URBANO", "AUTOBUS EXTRAURBANO"])
-    nome_foglio = next((f for f in xl.sheet_names if f.upper() == categoria_utente), xl.sheet_names[0])
-    
-    df_raw = pd.read_excel(xl, sheet_name=nome_foglio, header=None, engine='openpyxl')
-
-    def clean_val(x):
-        if pd.isna(x) or str(x).strip() == "": return 0.0
-        s = str(x).replace('€', '').replace('%', '').replace(' ', '').replace(',', '.')
-        try: return float(s)
-        except: return 0.0
-
-    # --- ESTRAZIONE DATI BASE (Le tue 7 Tecnologie!) ---
-    dati_finali = []
-    tecnologie_cercate = ["Benzina", "Diesel", "Elettrico rete", "Elettrico autoprodotto", 
-                          "Idrogeno Grigio", "Idrogeno rete", "Idrogeno autoprodotto"]
-
-    for i in range(min(25, len(df_raw))):
-        nome_tec = str(df_raw.iloc[i, 1]).strip() # Colonna B
-        match_tec = next((t for t in tecnologie_cercate if t.lower() == nome_tec.lower()), None)
+    st.warning(f"⚠️ Impossibile generare i grafici di confronto: File '{NOME_FILE_EXCEL}' non trovato nel repository.")
+else:
+    try:
+        xl = pd.ExcelFile(NOME_FILE_EXCEL, engine='openpyxl')
+        # Mappatura Sidebar -> Foglio Excel
+        foglio_target = "CAMION" if tipo_veicolo == "Camion Pesante" else ("AUTOBUS URBANO" if tipo_veicolo == "Autobus Urbano" else "AUTOBUS EXTRAURBANO")
+        nome_foglio = next((f for f in xl.sheet_names if f.upper() == foglio_target), xl.sheet_names[0])
         
-        if match_tec:
-            try:
+        df_raw = pd.read_excel(xl, sheet_name=nome_foglio, header=None, engine='openpyxl')
+
+        def clean_val(x):
+            if pd.isna(x) or str(x).strip() == "": return 0.0
+            try: return float(str(x).replace('€', '').replace('%', '').replace(' ', '').replace(',', '.'))
+            except: return 0.0
+
+        dati_finali = []
+        tecnologie_cercate = ["Benzina", "Diesel", "Elettrico rete", "Elettrico autoprodotto", "Idrogeno Grigio", "Idrogeno rete", "Idrogeno autoprodotto"]
+
+        for i in range(min(25, len(df_raw))):
+            nome_tec = str(df_raw.iloc[i, 1]).strip()
+            match_tec = next((t for t in tecnologie_cercate if t.lower() == nome_tec.lower()), None)
+            if match_tec:
                 dati_finali.append({
                     "Tecnologia": match_tec,
-                    "Autonomia": clean_val(df_raw.iloc[i, 3]),        # D
-                    "Consumo": clean_val(df_raw.iloc[i, 4]),          # E
-                    "Eta_WtW": clean_val(df_raw.iloc[i, 9]),          # J 
-                    "En_Primaria_Base": clean_val(df_raw.iloc[i, 13]),# N 
-                    "Emiss_Annue_Q": clean_val(df_raw.iloc[i, 16]),   # Q 
-                    "Emiss_Costruz": clean_val(df_raw.iloc[i, 17]),   # R 
-                    "Maint_km": clean_val(df_raw.iloc[i, 22]),        # W 
-                    "CAPEX_Totale": clean_val(df_raw.iloc[i, 25])     # Z 
+                    "Autonomia": clean_val(df_raw.iloc[i, 3]),
+                    "Consumo": clean_val(df_raw.iloc[i, 4]),
+                    "Eta_WtW": clean_val(df_raw.iloc[i, 9]),
+                    "Emiss_Annue_Q": clean_val(df_raw.iloc[i, 16]),
+                    "Emiss_Costruz": clean_val(df_raw.iloc[i, 17])
                 })
-            except Exception:
-                continue
 
-    if not dati_finali:
-        st.error(f"Nessun dato valido trovato nel foglio '{nome_foglio}'.")
-        st.stop()
+        df_clean = pd.DataFrame(dati_finali)
+        
+        if not df_clean[df_clean['Tecnologia'] == 'Diesel'].empty:
+            diesel_data = df_clean[df_clean['Tecnologia'] == 'Diesel'].iloc[0]
 
-    df_clean = pd.DataFrame(dati_finali)
-    df_clean['Tecnologia'] = pd.Categorical(df_clean['Tecnologia'], categories=tecnologie_cercate, ordered=True)
-    df_clean = df_clean.sort_values('Tecnologia')
-
-    # --- LETTURA COSTI FUEL E CONVERSIONE ---
-    st.sidebar.divider()
-    st.sidebar.header("⚡ Costi Carburante")
-    
-    costi_input_kwh = {} 
-    
-    def get_unit(t):
-        t_low = t.lower()
-        if "benzina" in t_low or "diesel" in t_low: return "[€/l]"
-        if "idrogeno" in t_low: return "[€/kg]"
-        return "[€/kWh]"
-
-    riga_prezzi = 19
-    for r in range(12, len(df_raw)):
-        if str(df_raw.iloc[r, 1]).strip() == "Benzina":
-            riga_prezzi = r
-            break
+            df_clean['Delta_Autonomia'] = df_clean['Autonomia'] - diesel_data['Autonomia']
+            df_clean['Delta_Consumo'] = df_clean['Consumo'] - diesel_data['Consumo']
+            df_clean['Eta_Percent'] = df_clean['Eta_WtW'] * 100 if df_clean['Eta_WtW'].mean() < 2 else df_clean['Eta_WtW']
+            diesel_eta = diesel_data['Eta_WtW'] * 100 if diesel_data['Eta_WtW'] < 2 else diesel_data['Eta_WtW']
+            df_clean['Delta_Eta'] = df_clean['Eta_Percent'] - diesel_eta
             
-    for r in range(riga_prezzi, riga_prezzi + 7):
-        try:
-            label = str(df_raw.iloc[r, 1]).strip()
-            match_label = next((t for t in tecnologie_cercate if t.lower() in label.lower() or label.lower() in t.lower()), label)
-            
-            val_natura = clean_val(df_raw.iloc[r, 2]) # Colonna C (es. 1.9 €/l)
-            val_kwh_excel = clean_val(df_raw.iloc[r, 5]) # Colonna F (es. 0.22 €/kWh)
-            
-            if val_natura > 0:
-                fattore = val_kwh_excel / val_natura
-            else:
-                if "benzina" in match_label.lower(): fattore = 0.22 / 1.9
-                elif "diesel" in match_label.lower(): fattore = 0.18 / 1.8
-                elif "idrogeno" in match_label.lower(): fattore = 0.03 
-                else: fattore = 1.0
-                
-            etichetta_ui = f"{match_label} {get_unit(match_label)}"
-            
-            user_val = st.sidebar.number_input(etichetta_ui, value=val_natura, format="%.3f")
-            costi_input_kwh[match_label] = user_val * fattore
-        except:
-            pass
-
-    # --- PARAMETRI UTENTE ---
-    st.sidebar.divider()
-    st.sidebar.header("⚙️ Parametri Flotta")
-    
-    km_annui = st.sidebar.slider("Percorrenza Annua (km/y)", 5000, 100000, 15000, step=1000)
-    lifetime = st.sidebar.slider("Anni di Utilizzo (y)", 1, 20, 10, step=1)
-    km_totali = km_annui * lifetime
-    
-    st.sidebar.metric(label="Percorrenza Totale [km]", value=f"{km_totali:,}".replace(',', '.'))
-    
-    KM_BASE_EXCEL = 15000 
-
-    # --- IL MOTORE MATEMATICO ---
-    def esegui_calcoli(row):
-        t = row["Tecnologia"]
-        p_fuel = next((v for k, v in costi_input_kwh.items() if k.lower() in t.lower()), 0.20)
-        
-        fuel_annuo = row["Consumo"] * km_annui * p_fuel         
-        maint_annuo = row["Maint_km"] * km_annui                 
-        capex_annuo = row["CAPEX_Totale"] / lifetime             
-        
-        fuel_totale = fuel_annuo * lifetime
-        maint_totale = maint_annuo * lifetime
-        
-        costo_annuo_tot = fuel_annuo + maint_annuo + capex_annuo
-        costo_tot_life = fuel_totale + maint_totale + row["CAPEX_Totale"] 
-        
-        en_primaria = row["En_Primaria_Base"] * (km_annui / KM_BASE_EXCEL) 
-        emiss_annue = row["Emiss_Annue_Q"] * (km_annui / KM_BASE_EXCEL)    
-        
-        emiss_totali_tons = (row["Emiss_Costruz"] + (emiss_annue * lifetime)) / 1000
-        
-        return pd.Series([
-            fuel_annuo, maint_annuo, capex_annuo, costo_annuo_tot,
-            fuel_totale, maint_totale, costo_tot_life,
-            en_primaria, emiss_annue, emiss_totali_tons
-        ])
-
-    df_clean[['OPEx_Fuel_y', 'OPEx_Maint_y', 'CAPEx_y', 'Costo_Annuo_Tot',
-              'OPEx_Fuel_Tot', 'OPEx_Maint_Tot', 'Costo_Totale',
-              'En_Primaria_y', 'Emiss_Annue', 'Emiss_Tot_Tons']] = df_clean.apply(esegui_calcoli, axis=1)
-
-    # --- VISUALIZZAZIONE RISULTATI BASE ---
-    st.divider()
-    st.header("📊 Analisi Parametri Principali")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("1. Autonomia [km]")
-        fig1 = px.bar(df_clean, x="Tecnologia", y="Autonomia", color="Tecnologia")
-        st.plotly_chart(fig1, use_container_width=True)
-    with c2:
-        st.subheader("2. Consumo [kWh/km]")
-        fig2 = px.bar(df_clean, x="Tecnologia", y="Consumo", color="Tecnologia")
-        st.plotly_chart(fig2, use_container_width=True)
-
-    c3, c4 = st.columns(2)
-    with c3:
-        st.subheader("3. Efficienza WtW (η) [-]")
-        df_clean["Eta_Percent"] = df_clean["Eta_WtW"] * 100 if df_clean["Eta_WtW"].mean() < 2 else df_clean["Eta_WtW"]
-        fig3 = px.bar(df_clean, x="Tecnologia", y="Eta_Percent", color="Tecnologia", text_auto='.1f')
-        fig3.update_layout(yaxis_title="Rendimento %")
-        st.plotly_chart(fig3, use_container_width=True)
-    with c4:
-        st.subheader("4. Energia Primaria [kWh/anno]")
-        fig4 = px.bar(df_clean, x="Tecnologia", y="En_Primaria_y", color="Tecnologia")
-        st.plotly_chart(fig4, use_container_width=True)
-
-    c7, c8 = st.columns(2)
-    with c7:
-        st.subheader("5. Costo Annuo [€/anno]")
-        df_plot_y = df_clean.melt(id_vars="Tecnologia", value_vars=['CAPEx_y', 'OPEx_Maint_y', 'OPEx_Fuel_y'], 
-                                  var_name="Voce", value_name="Euro")
-        df_plot_y["Voce"] = df_plot_y["Voce"].replace({'CAPEx_y':'CAPEx (Acquisto)', 'OPEx_Maint_y':'OPEx (Manut)', 'OPEx_Fuel_y':'OPEx (Fuel)'})
-        fig7 = px.bar(df_plot_y, x="Tecnologia", y="Euro", color="Voce", barmode='stack',
-                      color_discrete_sequence=["#0068C9", "#FFA421", "#FF4B4B"])
-        st.plotly_chart(fig7, use_container_width=True)
-        
-    with c8:
-        st.subheader("6. Costo Totale (TCO) [€]")
-        df_clean['CAPEx_Totale_Bar'] = df_clean['CAPEX_Totale']
-        df_plot_tot = df_clean.melt(id_vars="Tecnologia", value_vars=['CAPEx_Totale_Bar', 'OPEx_Maint_Tot', 'OPEx_Fuel_Tot'], 
-                                    var_name="Voce", value_name="Euro")
-        df_plot_tot["Voce"] = df_plot_tot["Voce"].replace({'CAPEx_Totale_Bar':'CAPEx (Acquisto)', 'OPEx_Maint_Tot':'OPEx (Manut)', 'OPEx_Fuel_Tot':'OPEx (Fuel)'})
-        fig8 = px.bar(df_plot_tot, x="Tecnologia", y="Euro", color="Voce", barmode='stack',
-                      color_discrete_sequence=["#0068C9", "#FFA421", "#FF4B4B"])
-        st.plotly_chart(fig8, use_container_width=True)
-
-    # --- CONFRONTO DIRETTO VS DIESEL (BASELINE) ---
-    st.divider()
-    st.header("🆚 Confronto Diretto vs DIESEL (Baseline)")
-    st.write("I grafici sottostanti mostrano lo **scostamento (Delta)** delle diverse tecnologie rispetto al veicolo Diesel. Una barra positiva indica un valore superiore al Diesel, una barra negativa indica un valore inferiore (risparmio o riduzione).")
-
-    if not df_clean[df_clean['Tecnologia'] == 'Diesel'].empty:
-        diesel_data = df_clean[df_clean['Tecnologia'] == 'Diesel'].iloc[0]
-
-        df_clean['Delta_Autonomia'] = df_clean['Autonomia'] - diesel_data['Autonomia']
-        df_clean['Delta_Consumo'] = df_clean['Consumo'] - diesel_data['Consumo']
-        df_clean['Delta_Eta'] = df_clean['Eta_Percent'] - (diesel_data['Eta_WtW'] * 100 if diesel_data['Eta_WtW'] < 2 else diesel_data['Eta_WtW'])
-        df_clean['Delta_Emiss'] = df_clean['Emiss_Tot_Tons'] - diesel_data['Emiss_Tot_Tons']
-
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            st.subheader("A. Scostamento Autonomia [km]")
-            fig_da = px.bar(df_clean, x="Tecnologia", y="Delta_Autonomia", color="Tecnologia", text_auto='.0f')
-            fig_da.add_hline(y=0, line_dash="dash", line_color="black", annotation_text="DIESEL BASELINE")
-            fig_da.update_layout(yaxis_title="km di differenza vs Diesel", showlegend=False)
-            st.plotly_chart(fig_da, use_container_width=True)
-            
-        with col_d2:
-            st.subheader("B. Scostamento Consumo [kWh/km]")
-            fig_dc = px.bar(df_clean, x="Tecnologia", y="Delta_Consumo", color="Tecnologia", text_auto='.2f')
-            fig_dc.add_hline(y=0, line_dash="dash", line_color="black", annotation_text="DIESEL BASELINE")
-            fig_dc.update_layout(yaxis_title="kWh/km di differenza vs Diesel", showlegend=False)
-            st.plotly_chart(fig_dc, use_container_width=True)
-
-        col_d3, col_d4 = st.columns(2)
-        with col_d3:
-            st.subheader("C. Delta Efficienza (WtW) [%]")
-            fig_de = px.bar(df_clean, x="Tecnologia", y="Delta_Eta", color="Tecnologia", text_auto='.1f')
-            fig_de.add_hline(y=0, line_dash="dash", line_color="black", annotation_text="DIESEL BASELINE")
-            fig_de.update_layout(yaxis_title="Punti Percentuali vs Diesel", showlegend=False)
-            st.plotly_chart(fig_de, use_container_width=True)
-
-        with col_d4:
-            st.subheader("D. Scomposizione Emissioni (CAPEX vs OPEX) [tCO2]")
+            # Ricalcolo emissioni in base ai km della sidebar
+            KM_BASE_EXCEL = 15000 
             df_clean['Emiss_Costruzione_Tons'] = df_clean['Emiss_Costruz'] / 1000
-            df_clean['Emiss_Operative_Tons'] = (df_clean['Emiss_Annue'] * lifetime) / 1000
-            
-            df_emiss = df_clean.melt(id_vars="Tecnologia", 
-                                     value_vars=['Emiss_Costruzione_Tons', 'Emiss_Operative_Tons'],
-                                     var_name="Fase", value_name="tCO2")
-            df_emiss['Fase'] = df_emiss['Fase'].replace({'Emiss_Costruzione_Tons': 'Costruzione Mezzo (CAPEX)', 
-                                                         'Emiss_Operative_Tons': 'Carburante e Uso (OPEX)'})
+            df_clean['Emiss_Operative_Tons'] = (df_clean['Emiss_Annue_Q'] * (km_annui / KM_BASE_EXCEL) * anni_utilizzo) / 1000
+            df_clean['Emiss_Tot_Tons'] = df_clean['Emiss_Costruzione_Tons'] + df_clean['Emiss_Operative_Tons']
+            diesel_emiss_tot = df_clean[df_clean['Tecnologia'] == 'Diesel'].iloc[0]['Emiss_Tot_Tons']
 
-            fig_dem = px.bar(df_emiss, x="Tecnologia", y="tCO2", color="Fase", barmode='stack',
-                             color_discrete_sequence=["#8E8E8E", "#D62728"])
-            
-            fig_dem.add_hline(y=diesel_data['Emiss_Tot_Tons'], line_dash="dash", line_width=2, 
-                              line_color="black", annotation_text=f"Totale Diesel ({diesel_data['Emiss_Tot_Tons']:.0f} tCO2)")
-            fig_dem.update_layout(yaxis_title="Tonnellate CO2 Totali (Ciclo di Vita)")
-            st.plotly_chart(fig_dem, use_container_width=True)
-    else:
-        st.warning("⚠️ Tecnologia 'Diesel' non presente per la categoria selezionata: impossibile generare il confronto base.")
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                st.subheader("A. Scostamento Autonomia [km]")
+                fig_da = px.bar(df_clean, x="Tecnologia", y="Delta_Autonomia", color="Tecnologia", text_auto='.0f')
+                fig_da.add_hline(y=0, line_dash="dash", line_color="black", annotation_text="DIESEL BASELINE")
+                fig_da.update_layout(yaxis_title="km vs Diesel", showlegend=False)
+                st.plotly_chart(fig_da, use_container_width=True)
+                
+            with col_d2:
+                st.subheader("B. Scostamento Consumo [kWh/km]")
+                fig_dc = px.bar(df_clean, x="Tecnologia", y="Delta_Consumo", color="Tecnologia", text_auto='.2f')
+                fig_dc.add_hline(y=0, line_dash="dash", line_color="black", annotation_text="DIESEL BASELINE")
+                fig_dc.update_layout(yaxis_title="kWh/km vs Diesel", showlegend=False)
+                st.plotly_chart(fig_dc, use_container_width=True)
 
-    # --- TABELLA DATI ---
-    st.divider()
-    st.subheader("📋 Data Table Completa")
-    st.dataframe(df_clean[["Tecnologia", "Autonomia", "Consumo", "Eta_WtW", "Costo_Annuo_Tot", "Costo_Totale", "Emiss_Tot_Tons"]].style.format({
-        "Autonomia": "{:,.0f} km",
-        "Consumo": "{:.3f} kWh/km",
-        "Eta_WtW": "{:.1%}",
-        "Costo_Annuo_Tot": "€ {:,.0f}",
-        "Costo_Totale": "€ {:,.0f}",
-        "Emiss_Tot_Tons": "{:,.1f} t"
-    }), use_container_width=True)
+            col_d3, col_d4 = st.columns(2)
+            with col_d3:
+                st.subheader("C. Delta Efficienza (WtW) [%]")
+                fig_de = px.bar(df_clean, x="Tecnologia", y="Delta_Eta", color="Tecnologia", text_auto='.1f')
+                fig_de.add_hline(y=0, line_dash="dash", line_color="black", annotation_text="DIESEL BASELINE")
+                fig_de.update_layout(yaxis_title="Punti % vs Diesel", showlegend=False)
+                st.plotly_chart(fig_de, use_container_width=True)
 
-except Exception as e:
-    st.error(f"Errore di Elaborazione: Assicurati che l'Excel contenga i fogli e le intestazioni previste. Dettaglio tecnico: {e}")
+            with col_d4:
+                st.subheader("D. Emissioni Totali (CAPEX vs OPEX)")
+                df_emiss = df_clean.melt(id_vars="Tecnologia", value_vars=['Emiss_Costruzione_Tons', 'Emiss_Operative_Tons'],
+                                         var_name="Fase", value_name="tCO2")
+                df_emiss['Fase'] = df_emiss['Fase'].replace({'Emiss_Costruzione_Tons': 'Costruzione Mezzo', 'Emiss_Operative_Tons': 'Carburante/Uso'})
+
+                fig_dem = px.bar(df_emiss, x="Tecnologia", y="tCO2", color="Fase", barmode='stack', color_discrete_sequence=["#8E8E8E", "#D62728"])
+                fig_dem.add_hline(y=diesel_emiss_tot, line_dash="dash", line_width=2, line_color="black", annotation_text=f"Diesel ({diesel_emiss_tot:.0f} tCO2)")
+                fig_dem.update_layout(yaxis_title="Tonnellate CO2")
+                st.plotly_chart(fig_dem, use_container_width=True)
+        else:
+            st.warning("⚠️ Dati Diesel non trovati nel foglio.")
+    except Exception as e:
+        st.error(f"Errore nella lettura dell'Excel: {e}")
