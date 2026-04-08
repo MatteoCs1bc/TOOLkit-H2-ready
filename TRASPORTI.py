@@ -43,7 +43,12 @@ with st.sidebar:
     giorni_operativi = st.slider("Giorni Operativi Annui", 200, 365, 300, 5)
     tempo_inattivita = st.slider("Finestra max per Ricarica (Ore)", 0.5, 12.0, 5.0, 0.5)
     
-    st.header("2. Costi Energetici Iniziali (2024)")
+    # --- BLOCCO REINSERITO: Condizioni Ambientali ---
+    st.header("2. Condizioni Ambientali")
+    orografia = st.selectbox("Orografia del percorso", ["Pianura", "Collinare", "Montagna"])
+    inverno_rigido = st.checkbox("Clima Invernale Rigido (< 0°C)")
+    
+    st.header("3. Costi Energetici Iniziali (2024)")
     p_in_benzina = st.number_input("Benzina (€/l)", value=1.90, format="%.2f") if tipo_veicolo == "Automobile" else 0.0
     p_in_diesel = st.number_input("Diesel (€/l)", value=1.80, format="%.2f")
     p_in_el_rete = st.number_input("Elettricità Rete (€/kWh)", value=0.31, format="%.3f")
@@ -51,7 +56,7 @@ with st.sidebar:
     p_in_h2_rete = st.number_input("H2 da Rete (€/kg)", value=20.00, format="%.2f")
     p_in_h2_fv = st.number_input("H2 Autoprodotto (€/kg)", value=15.00, format="%.2f")
 
-    st.header("3. Proiezioni Tecnologiche")
+    st.header("4. Proiezioni Tecnologiche")
     anno_acquisto = st.slider("Anno Previsto di Acquisto", 2024, 2035, 2024)
     anni_utilizzo = st.slider("Ciclo di Vita Utile (Anni)", 5, 30, 10) 
 
@@ -133,7 +138,7 @@ for idx, r in df_abs.iterrows():
     # 2. Fisica ed Emissioni LCA (Sul ciclo di vita TOTALE)
     aut_ev = r['Autonomia'] * (m_bev_auto if cat=='BEV' else (m_h2_auto if cat=='H2' else 1.0))
     e_prod = c_emiss[tipo_veicolo][cat] / 1000.0 # Tonnellate (fisse per la vita)
-    # Emissioni carburante = Consumo * KM Vita Intera * Fattore CO2
+    # Emissioni carburante = Consumo base Excel * Orografia * KM Vita Intera * Fattore CO2
     e_fuel = (r['Consumo'] * mult_env * total_km_life * f_emiss[t]) / 1000.0 
     
     # 3. Costi TCO
@@ -234,7 +239,7 @@ with col_g1:
     st.plotly_chart(f1, use_container_width=True)
     
 with col_g2:
-    st.subheader("B. Consumo Fisico [kWh/km]")
+    st.subheader("B. Consumo [kWh/km]")
     f2 = px.bar(df_base, x="Categoria_Base", y="Consumo", color="Categoria_Base", text_auto='.2f')
     f2.add_hline(y=diesel_val['Consumo'], line_dash="dash", line_color="black")
     f2.update_layout(showlegend=False, xaxis_title="")
@@ -251,7 +256,7 @@ with col_g3:
 with col_g4:
     st.subheader("D. Emissioni LCA Totali [tCO2]")
     df_melt_e = df_final.melt(id_vars="Tecnologia", value_vars=['E_Produzione', 'E_Carburante'], var_name="Fase", value_name="tCO2")
-    df_melt_e['Fase'] = df_melt_e['Fase'].replace({'E_Produzione': 'Costruzione', 'E_Carburante': 'Carburante (Uso)'})
+    df_melt_e['Fase'] = df_melt_e['Fase'].replace({'E_Produzione': 'Costruzione', 'E_Carburante': 'Carburante/Uso'})
     f4 = px.bar(df_melt_e, x="Tecnologia", y="tCO2", color="Fase", barmode='stack', color_discrete_sequence=["#8E8E8E", "#D62728"])
     f4.add_hline(y=(diesel_val['E_Produzione'] + diesel_val['E_Carburante']), line_dash="dash", line_color="black")
     st.plotly_chart(f4, use_container_width=True)
