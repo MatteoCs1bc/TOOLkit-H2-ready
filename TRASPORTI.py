@@ -1,17 +1,17 @@
-    st.header("2. Approvvigionamento Energia")
-    fonte_elettricita = st.radio("Sorgente Elettricità (BEV e Elettrolizzatore)", ["Da Rete", "Autoprodotta (es. FV Deposito)"])
-    prezzo_el_base = st.number_input("Prezzo Elettricità (€/kWh)", value=0.22 if "Rete" in fonte_elettricita else 0.08, format="%.3f")
+st.header("2. Approvvigionamento Energia")
+fonte_elettricita = st.radio("Sorgente Elettricità (BEV e Elettrolizzatore)", ["Da Rete", "Autoprodotta (es. FV Deposito)"])
+prezzo_el_base = st.number_input("Prezzo Elettricità (€/kWh)", value=0.22 if "Rete" in fonte_elettricita else 0.08, format="%.3f")
     
-    fonte_idrogeno = st.radio("Sorgente Idrogeno (FCEV)", ["Acquisto Esterno (Carro Bombolaio)", "Autoprodotto (Elettrolizzatore + HRS)"])
+fonte_idrogeno = st.radio("Sorgente Idrogeno (FCEV)", ["Acquisto Esterno (Carro Bombolaio)", "Autoprodotto (Elettrolizzatore + HRS)"])
     
     if "Esterno" in fonte_idrogeno:
         prezzo_h2_base = st.number_input("Prezzo di Mercato H2 oggi (€/kg)", value=16.0, format="%.2f")
     else:
         st.info(f"💡 **Modello 55 kWh/kg**\n\nIl costo dell'idrogeno viene calcolato automaticamente: **55 kWh** per produrre 1 kg di H2 (Costo energia: {prezzo_el_base * 55:.2f} €/kg) + i costi fissi dell'impianto di compressione (CSD).")
 
-    st.header("3. Proiezioni Future")
-    anno_acquisto = st.slider("Anno Previsto di Acquisto", 2024, 2035, 2024)
-    anni_utilizzo = st.slider("Ciclo di Vita Utile (Anni)", 5, 15, 10)
+st.header("3. Proiezioni Future")
+anno_acquisto = st.slider("Anno Previsto di Acquisto", 2024, 2035, 2024)
+anni_utilizzo = st.slider("Ciclo di Vita Utile (Anni)", 5, 15, 10)
 
 # --- MOTORE FISICO ---
 consumo_base_bev = {"Autobus Urbano": 1.1, "Autobus Extraurbano": 1.0, "Camion Pesante": 1.4}
