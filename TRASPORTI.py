@@ -1,4 +1,4 @@
-st.header("2. Approvvigionamento Energia")
+    st.header("2. Approvvigionamento Energia")
     fonte_elettricita = st.radio("Sorgente Elettricità (BEV e Elettrolizzatore)", ["Da Rete", "Autoprodotta (es. FV Deposito)"])
     prezzo_el_base = st.number_input("Prezzo Elettricità (€/kWh)", value=0.22 if "Rete" in fonte_elettricita else 0.08, format="%.3f")
     
