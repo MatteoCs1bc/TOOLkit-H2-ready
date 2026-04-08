@@ -21,6 +21,7 @@ Prima di valutare l'economia, il tool verifica se il mezzo a batterie è fisicam
 
 * **Payload Penalty (Peso Massimo):** Il tool calcola i kWh necessari per la missione e li divide per la densità della batteria. Al peso risultante viene sottratta la **Deroga Normativa UE** per i mezzi a zero emissioni (da 2.000 kg nel 2024 fino a 4.000 kg nel 2030). Se il peso extra netto supera i limiti di tolleranza (es. > 3.000 kg per un Bus Urbano), il mezzo perderebbe troppi passeggeri o merci. (Semaforo Rosso).
 * **Collo di Bottiglia Ricarica:** Calcola il tempo di ricarica necessario per ripristinare i kWh consumati. Se supera le ore di fermo al deposito inserite dall'utente, il servizio salta. (Semaforo Rosso).
+* **Stress Ambientali:** Il modello applica moltiplicatori ai consumi base per orografia (Pianura 1.0, Collina 1.25, Montagna 1.45) e clima rigido (<0°C: 1.25), con picchi di consumo fino al +81%. Per i veicoli elettrici (BEV), questo obbliga a installare max-batterie che innescano un "effetto domino": sfondamento dei limiti di peso (Payload Penalty), tempi di ricarica insostenibili e conseguente fallimento operativo, rendendo l'idrogeno la scelta obbligata.
 
 ---
 
