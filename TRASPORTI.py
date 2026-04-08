@@ -4,10 +4,10 @@ prezzo_el_base = st.number_input("Prezzo Elettricità (€/kWh)", value=0.22 if 
     
 fonte_idrogeno = st.radio("Sorgente Idrogeno (FCEV)", ["Acquisto Esterno (Carro Bombolaio)", "Autoprodotto (Elettrolizzatore + HRS)"])
     
-    if "Esterno" in fonte_idrogeno:
-        prezzo_h2_base = st.number_input("Prezzo di Mercato H2 oggi (€/kg)", value=16.0, format="%.2f")
-    else:
-        st.info(f"💡 **Modello 55 kWh/kg**\n\nIl costo dell'idrogeno viene calcolato automaticamente: **55 kWh** per produrre 1 kg di H2 (Costo energia: {prezzo_el_base * 55:.2f} €/kg) + i costi fissi dell'impianto di compressione (CSD).")
+if "Esterno" in fonte_idrogeno:
+    prezzo_h2_base = st.number_input("Prezzo di Mercato H2 oggi (€/kg)", value=16.0, format="%.2f")
+else:
+    st.info(f"💡 **Modello 55 kWh/kg**\n\nIl costo dell'idrogeno viene calcolato automaticamente: **55 kWh** per produrre 1 kg di H2 (Costo energia: {prezzo_el_base * 55:.2f} €/kg) + i costi fissi dell'impianto di compressione (CSD).")
 
 st.header("3. Proiezioni Future")
 anno_acquisto = st.slider("Anno Previsto di Acquisto", 2024, 2035, 2024)
