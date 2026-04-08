@@ -103,7 +103,68 @@ def assign_tier(score):
 st.title("🔍 H2READY: Tool di Scouting Industriale Integrato (A.1 & A.2)")
 st.markdown("**Analisi del Potenziale Termico e di Materia Prima (RED III)**")
 
-# ... (Qui puoi reinserire il blocco st.expander con la guida se lo desideri) ...
+# --- SEZIONE ESPANDIBILE: GUIDA ALL'UTILIZZO ---
+with st.expander("📚 Guida all'Utilizzo: Scopri come funziona l'algoritmo e come preparare i dati", expanded=False):
+    st.markdown("""
+    Benvenuto nel **Tool di Scouting Industriale H2READY**. Questo strumento supporta le Amministrazioni Comunali nell'identificazione delle aziende con il maggior potenziale strategico per la transizione verso l'idrogeno verde[cite: 1799, 1800].
+
+    ### ⚠️ Parola d'ordine: IDROGENO SOLO DOVE ALTRIMENTI NON ELETTRIFICABILE!
+    Il sistema segue il principio della **neutralità tecnologica**: l'idrogeno è una priorità esclusivamente per i settori **"Hard-to-Abate" (HTA)**, dove le temperature superano i 400°C o dove la molecola serve come reagente chimico[cite: 1814, 1827]. Per processi a bassa/media temperatura (es. essiccazione, vapore a bassa pressione), l'elettrificazione diretta è la soluzione più efficiente[cite: 1814, 1828].
+
+    ---
+
+    ### 1. Classificazione dei Settori Industriali (Codici ATECO)
+    Il tool analizza il codice ATECO per distinguere tra usi termici e chimici:
+
+    #### **A. Materia Prima e Feedstock (Tool A.2 - Obbligo RED III)**
+    * **ATECO 19.x (Raffinazione) e 20.x (Chimica di base):** L'idrogeno è usato come reagente per produrre ammoniaca, metanolo o per la desolforazione[cite: 1879, 1880]. 
+    * **Obiettivo:** Sostituire l'idrogeno "grigio" (fossile) con idrogeno verde per rispettare l'obbligo europeo di raggiungere il **42% di idrogeno rinnovabile entro il 2030**[cite: 2152, 2153].
+    * **Punteggio Base:** **5 Punti**.
+
+    #### **B. Calore di Processo ad Alta Temperatura (Tool A.1)**
+    * **ATECO 24.x (Siderurgia e Metallurgia):** Processi di fusione e forgiatura che superano gli 800°C e arrivano oltre i 1.500°C[cite: 1869, 1870]. L'idrogeno può anche sostituire il carbone come agente riducente[cite: 1873].
+    * **ATECO 23.x (Minerali Non Metalliferi):** Produzione di **Cemento** (cottura clinker a 1.450°C), **Vetro** (fusione a 1.600°C) e **Ceramica** (cottura sopra i 400°C)[cite: 1875, 1877].
+    * **Punteggio Base:** **5 Punti** (24.x) o **4 Punti** (23.x).
+
+    #### **C. Aree di Esclusione (Elettrificabili)**
+    * **ATECO 10.x/11.x (Alimentare), 16.x (Legno), 17.x (Carta), 13.x/14.x (Tessile):** Utilizzano calore a bassa/media temperatura (sotto i 400°C)[cite: 1883, 1884]. Questi settori sono **esclusi** dallo scouting idrogeno poiché l'elettrificazione è prioritaria[cite: 1885].
+    * **Punteggio Base:** **0 Punti**.
+
+    ---
+
+    ### 2. Calcolo dello Score e Classificazione (Tier)
+    Il punteggio finale di ogni azienda viene calcolato come segue:
+    1.  **Punteggio Base ATECO** moltiplicato per la dimensione aziendale:
+        * **Grande Impresa:** x1.5 (maggiore capacità CAPEX e pressione ETS/CBAM)[cite: 2432, 2433].
+        * **Media Impresa:** x1.2.
+        * **Piccola Impresa:** x1.0.
+    2.  **Bonus Strategici:**
+        * **Aggregazione Consortile (+3 Punti):** Aziende in Consorzi (es. ZIPR, COSEF) che possono aggregare la domanda[cite: 1921].
+        * **South H2 Corridor (+3 Punti):** Vicinanza alla futura dorsale PCI Mazara-Tarvisio[cite: 2328, 2404].
+
+    #### **Risultato Finale:**
+    * 🟢 **Tier 1 - Priorità Alta (Score ≥ 10.0):** Candidati ideali per progetti pilota e studi di pre-fattibilità tecnica[cite: 1802].
+    * 🟡 **Tier 2 - Media (Score 7.0 - 9.9):** Aziende con potenziale per sinergie di distretto.
+    * 🔴 **Non Idoneo / Tier 3:** Settori elettrificabili o punteggi insufficienti.
+
+    ---
+
+    ### 3. Struttura del file Excel di Input
+    Il file deve contenere le seguenti intestazioni (le prime tre sono obbligatorie):
+    """)
+
+    # Tabella visiva della struttura Excel
+    df_guida = pd.DataFrame({
+        "Nome Azienda": ["Acciaierie Friulane S.p.A.", "Chimica Isontina S.r.l.", "Mobili & Design"],
+        "Codice ATECO": ["24.10", "20.14", "16.23"],
+        "Dimensione": ["Grande", "Media", "Media"],
+        "Fatturato (€)": [120000000, 12000000, 8000000],
+        "# Dipendenti": [450, 65, 55],
+        "Ubicazione/Consorzio": ["SÌ", "SÌ", "NO"],
+        "Vicinanza South H2 Corridor": ["SÌ", "SÌ", "NO"]
+    })
+    st.dataframe(df_guida, hide_index=True, use_container_width=True)
+    st.caption("*Le colonne opzionali vuote verranno ignorate dal sistema senza interrompere l'analisi.*")
 
 st.info("Carica il database aziendale. Colonne minime: Nome Azienda, Codice ATECO, Dimensione.")
 
