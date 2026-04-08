@@ -24,10 +24,25 @@ def interpolate(year, y_2024, y_2030):
     if year <= 2024: return y_2024
     if year >= 2030: return y_2030
     return y_2024 + (y_2030 - y_2024) * ((year - 2024) / (2030 - 2024))
+import os # Assicurati che os sia importato all'inizio del file
+
+# --- MENU A TENDINA DA FILE ESTERNO ---
+NOME_FILE_MD = "REadMe_Mezzi.md"
+
+if os.path.exists(NOME_FILE_MD):
+    # Crea la tendina
+    with st.expander("ℹ️ Leggi Istruzioni, Logiche e Assunzioni del Simulatore"):
+        # Apre il file, lo legge e lo stampa a schermo come Markdown
+        with open(NOME_FILE_MD, "r", encoding="utf-8") as f:
+            st.markdown(f.read())
+else:
+    # Piccolo avviso (utile a te mentre programmi) se il file non è nella stessa cartella
+    st.info(f"💡 Suggerimento: Carica il file '{NOME_FILE_MD}' nella stessa cartella per vedere qui le istruzioni.")
 
 # ==========================================
 # 1. INTERFACCIA UTENTE (SIDEBAR) 
 # ==========================================
+
 with st.sidebar:
     st.header("📂 Caricamento Database")
     NOME_FILE_EXCEL = "Comparison H2 elc FF.xlsx"
