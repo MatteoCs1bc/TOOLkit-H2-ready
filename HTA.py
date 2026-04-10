@@ -159,6 +159,7 @@ with st.expander("📖 ISTRUZIONI E METODOLOGIA (Leggi prima di iniziare)", expa
     Il motore logico analizza i codici ATECO incrociandoli con la **Direttiva Europea RED III** e con le **leggi della termodinamica**. Non si limita a cercare chi usa genericamente "alte temperature", ma individua dove l'idrogeno è **chimicamente insostituibile** (es. acciaierie DRI, fertilizzanti) e dove invece rappresenta uno spreco energetico rispetto alla diretta elettrificazione.
     
     **Nota sui Codici ATECO:** Il tool legge solo le prime 4 cifre del codice (la *Classe*), ignorando le ultime due (che hanno finalità puramente contabili o statistiche). Se inserisci un codice che non fa parte del database prioritario per l'idrogeno, il tool riconoscerà comunque il macro-settore di appartenenza (le prime 2 cifre) ed emetterà un alert chiedendoti di verificare il dato.
+    ATTENZIONE: Noto il nome dell'azienda con semplici ricerche online è possibile recuperare facilmente la dimensione aziendale, il codice ATECO e il fatturato aziendale.
     
     ### 2. Compilazione del File (Regola d'Oro)
     Scarica il template Excel tramite il bottone qui sotto e compilalo. 
