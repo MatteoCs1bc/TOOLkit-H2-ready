@@ -1,144 +1,163 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="H2READY - Reverse Engineering Spaziale", layout="wide")
+st.set_page_config(page_title="H2READY - Reverse Engineering Spazio-Economico", layout="wide")
 
-# --- DATI DI BASE FOTOVOLTAICO (Esatto dal database utente) ---
-# Struttura: Nome: [Potenza Specifica W/m2, Ore Equivalenti base]
-# 70 W/m2 = 700 kW/ha
-PV_DATA = {
-    "A terra (Inseguimento)": {"w_m2": 70.0, "h_eq_base": 1380},
-    "Tetto a Falda": {"w_m2": 227.27, "h_eq_base": 1200},
-    "Tetto Piano": {"w_m2": 113.64, "h_eq_base": 1200}
+# --- COSTANTI E DATI TECNICI ---
+EFF_ELY = 55.0  # kWh per 1 kg di H2
+PREMIUM_BATTERIA_EKG = 1.50  # Costo forfettario LCOS batteria in €/kg H2
+MOLTIPLICATORE_OPEX_STOCCAGGIO = 1.20  # +20% per stoccaggio, compressione e OPEX
+
+# [Potenza Specifica W/m2, Ore Eq Base Nord]
+TECH_DATA = {
+    "PV a Terra (Tracker)": {"w_m2": 70.0, "h_eq_base": 1380},
+    "PV Tetto Piano (Capannoni)": {"w_m2": 113.64, "h_eq_base": 1200},
+    "Eolico (Area del Parco)": {"w_m2": 5.0, "h_eq_base": 1800}
 }
 
-# Costante energetica
-EFF_ELY = 55.0 # kWh per 1 kg di H2
-
-# --- INTERFACCIA LATERALE (INPUTS) ---
+# --- INTERFACCIA LATERALE ---
 with st.sidebar:
-    st.header("⚙️ Parametri di Configurazione")
-    
-    target_h2_ton = st.number_input("🎯 Target Idrogeno (Tonnellate/anno)", min_value=5, max_value=20000, value=100, step=10)
+    st.header("🎯 1. Target e Localizzazione")
+    target_h2_ton = st.number_input("Target Idrogeno (Tonnellate/anno)", min_value=10, max_value=20000, value=500, step=50)
     target_h2_kg = target_h2_ton * 1000
     
-    st.markdown("---")
-    st.subheader("☀️ Localizzazione Geografica")
-    regione = st.selectbox("Seleziona la zona climatica", ["Nord Italia", "Centro Italia", "Sud Italia / Isole"])
-    # Moltiplicatori empirici per le ore equivalenti
-    moltiplicatore_regione = {"Nord Italia": 1.0, "Centro Italia": 1.15, "Sud Italia / Isole": 1.3}[regione]
+    regione = st.selectbox("Zona Climatica", ["Nord Italia", "Centro Italia", "Sud Italia / Isole"])
+    molt_regione = {"Nord Italia": 1.0, "Centro Italia": 1.15, "Sud Italia / Isole": 1.3}[regione]
 
     st.markdown("---")
-    st.subheader("🔋 Architettura Impianto")
-    config_batterie = st.radio(
-        "Presenza di Accumulo (BESS):", 
-        ["Senza Batterie (Off-grid Diretto)", "Con Batterie (Off-grid Bufferizzato)"]
-    )
+    st.header("⚖️ 2. Mix Energetico")
+    tipo_pv = st.radio("Scegli tecnologia Fotovoltaica:", ["PV a Terra (Tracker)", "PV Tetto Piano (Capannoni)"])
     
-    if "Con Batterie" in config_batterie:
-        cf_ore_ely = st.slider("Fattore di Carico Elettrolizzatore (Ore/anno)", 2000, 6000, 4000, step=100, help="Le batterie permettono all'elettrolizzatore di lavorare anche di notte o con nuvole.")
-        perdita_batteria = 1.10 # +10% di energia richiesta per compensare le inefficienze di carica/scarica
-    else:
-        cf_ore_ely = None # Sarà calcolato dinamicamente sulle ore del PV
-        perdita_batteria = 1.0 # Nessuna perdita di stoccaggio
+    quota_pv_pct = st.slider("Mix Fotovoltaico vs Eolico (%)", min_value=0, max_value=100, value=50, step=5, 
+                             help="100% = Solo Fotovoltaico. 0% = Solo Eolico. Valori intermedi = Impianto Ibrido.")
+    quota_pv = quota_pv_pct / 100.0
+    quota_wind = 1.0 - quota_pv
+
+    st.markdown("---")
+    st.header("🔋 3. Architettura e Costi (CfD)")
+    config_batterie = st.radio("Presenza di Accumulo (BESS):", ["Senza Batterie (Direct-Coupled)", "Con Batterie (Buffered)"])
+    
+    cfd_pv = st.slider("CfD Fotovoltaico (€/MWh)", 30.0, 150.0, 60.0, step=5.0)
+    cfd_wind = st.slider("CfD Eolico (€/MWh)", 50.0, 180.0, 80.0, step=5.0)
 
 
 # --- MOTORE DI CALCOLO ---
-# 1. Energia Pura Necessaria per l'H2
-energia_h2_mwh = (target_h2_kg * EFF_ELY) / 1000  # MWh all'anno necessari per l'elettrolisi
-energia_pv_richiesta_mwh = energia_h2_mwh * perdita_batteria
+# 1. Energia Richiesta
+perdita_batteria = 1.10 if "Con" in config_batterie else 1.0
+energia_h2_pura_mwh = (target_h2_kg * EFF_ELY) / 1000
+energia_totale_richiesta_mwh = energia_h2_pura_mwh * perdita_batteria
 
-# 2. Calcolo Capacità e Superfici per ogni Tecnologia
-risultati = []
-for nome, dati in PV_DATA.items():
-    h_eq_reali = dati["h_eq_base"] * moltiplicatore_regione
-    
-    # Se non ci sono batterie, l'elettrolizzatore lavora esattamente per le ore equivalenti del PV
-    ore_funzionamento_ely = cf_ore_ely if cf_ore_ely else h_eq_reali
-    
-    # Taglia Elettrolizzatore (MW) = Energia (MWh) / Ore di funzionamento
-    potenza_ely_mw = energia_h2_mwh / ore_funzionamento_ely
-    
-    # Resa del fotovoltaico (MWh all'anno per Ettaro)
-    # (W/m2 * 10.000) / 1.000.000 = MW/ha. Moltiplicato per ore = MWh/ha
-    potenza_pv_mw_per_ha = (dati["w_m2"] * 10000) / 1000000
-    resa_mwh_ha = potenza_pv_mw_per_ha * h_eq_reali
-    
-    # Ettari necessari = Energia totale richiesta / Resa per Ettaro
-    area_ettari = energia_pv_richiesta_mwh / resa_mwh_ha
-    
-    # Potenza FV Totale (MWp)
-    potenza_pv_totale_mwp = area_ettari * potenza_pv_mw_per_ha
-    
-    risultati.append({
-        "Tecnologia PV": nome,
-        "Superficie Necessaria (Ettari)": round(area_ettari, 2),
-        "Capacità FV (MWp)": round(potenza_pv_totale_mwp, 1),
-        "Taglia Elettrolizzatore (MW)": round(potenza_ely_mw, 1),
-        "Ore Eq. Locali (h)": round(h_eq_reali, 0)
-    })
+# Quota energia per fonte
+energia_pv_mwh = energia_totale_richiesta_mwh * quota_pv
+energia_wind_mwh = energia_totale_richiesta_mwh * quota_wind
 
-df_risultati = pd.DataFrame(risultati)
+# 2. Rese e Superfici
+h_eq_pv = TECH_DATA[tipo_pv]["h_eq_base"] * molt_regione
+h_eq_wind = TECH_DATA["Eolico (Area del Parco)"]["h_eq_base"] * molt_regione
+
+# Resa in MWh per Ettaro: (W/m2 * 10000 / 1000000) * Ore
+resa_ha_pv = (TECH_DATA[tipo_pv]["w_m2"] * 10000 / 1000000) * h_eq_pv
+resa_ha_wind = (TECH_DATA["Eolico (Area del Parco)"]["w_m2"] * 10000 / 1000000) * h_eq_wind
+
+ettari_pv = energia_pv_mwh / resa_ha_pv if resa_ha_pv > 0 and energia_pv_mwh > 0 else 0.0
+ettari_wind = energia_wind_mwh / resa_ha_wind if resa_ha_wind > 0 and energia_wind_mwh > 0 else 0.0
+
+# 3. Taglia Elettrolizzatore
+if "Con" in config_batterie:
+    taglia_ely_mw = energia_h2_pura_mwh / 4000.0  # CF forzato a 4000h grazie alle batterie
+else:
+    # CF ibrido stimato (media pesata delle ore)
+    ore_mix = (h_eq_pv * quota_pv) + (h_eq_wind * quota_wind)
+    taglia_ely_mw = energia_totale_richiesta_mwh / ore_mix if ore_mix > 0 else 0.0
+
+# 4. Calcolo Economico LCOH
+# Costo medio ponderato dell'energia (€/MWh)
+lcoe_blended = (cfd_pv * quota_pv) + (cfd_wind * quota_wind)
+
+# Costo energia pura per 1 kg di H2
+costo_energia_per_kg = (lcoe_blended / 1000) * EFF_ELY * perdita_batteria
+
+# Aggiunta premio batteria
+costo_batteria_per_kg = PREMIUM_BATTERIA_EKG if "Con" in config_batterie else 0.0
+
+# Subtotale prima dei ricarichi
+subtotale_lcoh = costo_energia_per_kg + costo_batteria_per_kg
+
+# LCOH Finale (+20% per stoccaggio, compressione, opex)
+lcoh_finale = subtotale_lcoh * MOLTIPLICATORE_OPEX_STOCCAGGIO
+markup_20_pct_valore = lcoh_finale - subtotale_lcoh
+
 
 # --- DASHBOARD VISIVA ---
-st.title("🔄 H2READY - Reverse Engineering Spaziale")
-st.markdown(f"**Obiettivo:** Produrre **{target_h2_kg:,.0f} kg/anno** di Idrogeno Verde (Costo energetico: 55 kWh/kg).")
+st.title("🔄 H2READY - Reverse Engineering Spazio-Economico")
+st.markdown(f"**Obiettivo:** Produrre **{target_h2_kg:,.0f} kg/anno** di Idrogeno Verde (Costo energetico fisso: 55 kWh/kg).")
 
-# Metriche Globali
-st.subheader("⚡ Fabbisogno Energetico Base")
-c1, c2 = st.columns(2)
-c1.metric("Energia Totale da Produrre", f"{energia_pv_richiesta_mwh:,.0f} MWh/anno", help="Include eventuali perdite di accumulo se configurate.")
-c2.metric("Impatto Accumulo", "+10% Energia" if "Con Batterie" in config_batterie else "0% (Diretto)")
-
-st.markdown("---")
-
-# Visualizzazione Risultati (Focus sugli Ettari)
-st.subheader("🗺️ Mappatura del Consumo di Suolo e Impianti")
-
-col_grafico, col_tabella = st.columns([1, 1.2])
-
-with col_grafico:
-    fig = px.bar(df_risultati, x='Tecnologia PV', y='Superficie Necessaria (Ettari)', 
-                 title="Quanti Ettari mi servono?",
-                 text_auto='.1f', color='Tecnologia PV',
-                 color_discrete_sequence=['#FF8F00', '#1565C0', '#42A5F5'])
-    
-    # Aggiungo la linea rossa per evidenziare la soglia di 1 Ettaro
-    fig.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Soglia 1 ha")
-    fig.update_layout(showlegend=False, yaxis_title="Ettari (ha)")
-    st.plotly_chart(fig, use_container_width=True)
-
-with col_tabella:
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.dataframe(df_risultati[['Tecnologia PV', 'Superficie Necessaria (Ettari)', 'Capacità FV (MWp)', 'Taglia Elettrolizzatore (MW)']], 
-                 hide_index=True, use_container_width=True)
-    
-    # Alert se si superano grandi superfici
-    max_ha = df_risultati['Superficie Necessaria (Ettari)'].max()
-    if max_ha > 1.0:
-        st.warning(f"⚠️ **Nota Dimensionale:** Per produrre {target_h2_ton} ton/anno con impianti a terra servono ben **{df_risultati.iloc[0]['Superficie Necessaria (Ettari)']} ettari**. È un progetto di scala industriale (Utility Scale).")
-    else:
-        st.info("🌱 La superficie richiesta per questo target è inferiore a 1 ettaro.")
+# KPI PRINCIPALI
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("LCOH Stimato (€/kg)", f"€ {lcoh_finale:.2f}")
+col2.metric("Superficie Totale Richiesta", f"{ettari_pv + ettari_wind:,.1f} Ettari")
+col3.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:.1f} MW")
+col4.metric("Energia Totale Generata", f"{energia_totale_richiesta_mwh:,.0f} MWh/y")
 
 st.markdown("---")
 
-# Spiegazione Tecnica della Capacità (Batterie vs No Batterie)
-with st.expander("🔍 Perché la Taglia dell'Elettrolizzatore cambia? (Analisi Capacità)"):
-    if "Con Batterie" in config_batterie:
-        st.markdown(f"""
-        Hai scelto l'opzione **Con Batterie**. 
-        In questa configurazione l'elettrolizzatore non deve fare tutto il lavoro nelle poche ore in cui c'è il sole. 
-        Le batterie immagazzinano l'energia fotovoltaica e la rilasciano lentamente.
-        * L'elettrolizzatore lavora per **{cf_ore_ely} ore all'anno**.
-        * **Vantaggio:** Ti basta comprare un elettrolizzatore più piccolo (**{df_risultati.iloc[0]['Taglia Elettrolizzatore (MW)']} MW**), risparmiando enormemente sui costi di acquisto (CAPEX).
-        * **Svantaggio:** Devi installare circa il 10% di fotovoltaico in più per coprire l'energia che si disperde scaldando le batterie.
-        """)
+# GRAFICI SCOMPOSIZIONE
+col_g1, col_g2 = st.columns(2)
+
+with col_g1:
+    st.subheader("🗺️ Consumo di Suolo (Ettari)")
+    df_suolo = pd.DataFrame({
+        "Tecnologia": [tipo_pv, "Eolico (Area Parco)"],
+        "Ettari": [ettari_pv, ettari_wind]
+    })
+    # Rimuovi righe a 0 per pulizia grafica
+    df_suolo = df_suolo[df_suolo["Ettari"] > 0]
+    
+    if not df_suolo.empty:
+        fig_suolo = px.pie(df_suolo, values='Ettari', names='Tecnologia', hole=0.5,
+                           color='Tecnologia', 
+                           color_discrete_map={tipo_pv: '#FFB300', "Eolico (Area Parco)": '#1E88E5'})
+        fig_suolo.update_traces(textposition='inside', textinfo='value+label')
+        st.plotly_chart(fig_suolo, use_container_width=True)
+        
+        st.info("💡 **Nota sull'Eolico:** Gli ettari indicati rappresentano l'**Area del Parco** (distanziamento pale per evitare ombre aerodinamiche). Il suolo effettivamente impermeabilizzato dalle fondamenta è inferiore al 3% di quest'area.")
     else:
-        st.markdown(f"""
-        Hai scelto l'opzione **Senza Batterie**.
-        In questa configurazione l'elettrolizzatore è attaccato direttamente ai pannelli (Direct-Coupled) e si accende e spegne con il sole.
-        * L'elettrolizzatore lavora pochissimo, solo per **{df_risultati.iloc[0]['Ore Eq. Locali (h)']} ore all'anno**.
-        * **Svantaggio (Problema di Capacità):** Per riuscire a produrre le tue {target_h2_ton} tonnellate in così poco tempo, dovrai comprare un elettrolizzatore gigantesco (**{df_risultati.iloc[0]['Taglia Elettrolizzatore (MW)']} MW**). Questo distruggerà il business case dell'impianto a causa dell'altissimo costo di investimento (CAPEX).
-        * **Vantaggio:** Non perdi energia nei cicli di carica/scarica delle batterie.
-        """)
+        st.warning("Nessuna tecnologia selezionata.")
+
+with col_g2:
+    st.subheader("💶 Scomposizione Costo LCOH (€/kg)")
+    
+    # Dati per il Waterfall o Bar chart
+    df_costi = pd.DataFrame({
+        "Voce di Costo": ["Energia Rinnovabile", "Ammortamento Batterie", "+20% (Stocc/Compr/OPEX)"],
+        "Costo (€/kg)": [costo_energia_per_kg, costo_batteria_per_kg, markup_20_pct_valore]
+    })
+    
+    fig_costi = go.Figure(go.Waterfall(
+        name = "LCOH", orientation = "v",
+        measure = ["relative", "relative", "relative", "total"],
+        x = ["Costo Energia (CfD)", "Costo Batterie", "Stoccaggio & OPEX", "LCOH FINALE"],
+        textposition = "outside",
+        text = [f"€{costo_energia_per_kg:.2f}", f"€{costo_batteria_per_kg:.2f}", f"€{markup_20_pct_valore:.2f}", f"€{lcoh_finale:.2f}"],
+        y = [costo_energia_per_kg, costo_batteria_per_kg, markup_20_pct_valore, lcoh_finale],
+        connector = {"line":{"color":"rgb(63, 63, 63)"}},
+        decreasing = {"marker":{"color":"#ef553b"}},
+        increasing = {"marker":{"color":"#00cc96"}},
+        totals = {"marker":{"color":"#1f77b4"}}
+    ))
+    
+    fig_costi.update_layout(showlegend=False, yaxis_title="€ / kg H2")
+    st.plotly_chart(fig_costi, use_container_width=True)
+    
+    st.caption("Il costo finale è calcolato convertendo il CfD in €/kg (base 55 kWh/kg), sommando un eventuale premio per l'accumulo e maggiorando il totale del 20% per spese di compressione e gestione impianto.")
+
+# DATI TABELLARI DETTAGLIATI
+with st.expander("📊 Vedi Dettaglio Dati e Capacità Impianti (MW)"):
+    df_dettaglio = pd.DataFrame({
+        "Parametro": ["Quota Energia (%)", "Energia da produrre (MWh/y)", "Ore Equivalenti (h/y)", "Potenza Impianto Necessaria (MW)"],
+        tipo_pv: [f"{quota_pv*100:.0f}%", f"{energia_pv_mwh:,.0f}", f"{h_eq_pv:,.0f}", f"{energia_pv_mwh/h_eq_pv if h_eq_pv>0 else 0:.1f}"],
+        "Eolico": [f"{quota_wind*100:.0f}%", f"{energia_wind_mwh:,.0f}", f"{h_eq_wind:,.0f}", f"{energia_wind_mwh/h_eq_wind if h_eq_wind>0 else 0:.1f}"]
+    })
+    st.table(df_dettaglio)
