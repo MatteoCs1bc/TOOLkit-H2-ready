@@ -199,11 +199,15 @@ pv_final_array = array_pv_1mw * taglia_pv_mw
 wind_final_array = array_wind_1mw * taglia_wind_mw
 ely_usage_final, batt_soc_final = simula_h2_plant(pv_final_array, wind_final_array, taglia_ely_mw, taglia_batt_mwh)
 
-# Risultati Tecnici
+# Risultati Tecnici e CAPACITY FACTOR
 energia_rinnovabile_totale = np.sum(pv_final_array) + np.sum(wind_final_array)
 energia_assorbita = np.sum(ely_usage_final)
 energia_sprecata = energia_rinnovabile_totale - energia_assorbita
-cf_ely = energia_assorbita / (taglia_ely_mw * 8760.0) if taglia_ely_mw > 0 else 0
+
+# -- CALCOLO CF ELETTROLIZZATORE (Aggiunto in Output) --
+ore_funzionamento_eq = energia_assorbita / taglia_ely_mw if taglia_ely_mw > 0 else 0
+cf_ely_percentuale = (ore_funzionamento_eq / 8760.0) * 100 if taglia_ely_mw > 0 else 0
+
 ettari_pv = taglia_pv_mw / 0.7  # Ipotesi standard Tracker
 
 # Calcolo Economico (LCOH)
@@ -230,13 +234,16 @@ st.title("🏭 H2 Reverse Engineering: Dati Orari Reali e Sizing Ottimale")
 # KPI PRINCIPALI
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("LCOH Finale", f"€ {lcoh_finale:.2f} / kg")
-c2.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:.1f} MW", f"CF: {cf_ely*100:.1f}%")
-c3.metric("Taglia Batteria", f"{taglia_batt_mwh:.1f} MWh")
+
+# -- NUOVA METRICA CON CF ORE/ANNO E % --
+c2.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:.1f} MW", f"CF: {ore_funzionamento_eq:,.0f} h/anno ({cf_ely_percentuale:.1f}%)")
+
+c3.metric("Taglia Batteria (BESS)", f"{taglia_batt_mwh:.1f} MWh")
 c4.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} ha", "Tracker 0.7 MW/ha")
 
 st.markdown("---")
 
-# GRAFICO 8760H (Usiamo Scattergl per alte prestazioni con tanti punti)
+# GRAFICO 8760H
 st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore Reali)")
 st.markdown("Grafico basato sulle curve reali. Il fotovoltaico (giallo) e l'eolico (azzurro) alimentano l'elettrolizzatore (rosso). La batteria (verde) livella i picchi.")
 
