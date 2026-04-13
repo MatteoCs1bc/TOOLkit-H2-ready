@@ -124,7 +124,8 @@ def simula_h2_plant(pv_array_mw, wind_array_mw, ely_mw, batt_mwh, eff_batt=0.90)
 # INTERFACCIA LATERALE
 # ==========================================
 st.sidebar.header("🎯 1. Target")
-target_h2_ton = st.sidebar.slider("Target Idrogeno (ton/anno)", 10, 5000, 500, step=10)
+# Slider aggiornato per arrivare a 100.000 tonnellate
+target_h2_ton = st.sidebar.slider("Target Idrogeno (ton/anno)", 100, 100000, 1000, step=100)
 target_h2_kg = target_h2_ton * 1000
 
 st.sidebar.header("🗺️ 2. Localizzazione Geografica")
@@ -143,7 +144,6 @@ cfd_pv = st.sidebar.slider("CfD Fotovoltaico (€/MWh)", 30.0, 120.0, 60.0, step
 cfd_wind = st.sidebar.slider("CfD Eolico (€/MWh)", 50.0, 150.0, 80.0, step=5.0)
 capex_ely = st.sidebar.slider("CAPEX Elettrolizzatore (€/kW)", 500, 2000, 1000, step=100)
 capex_batt = st.sidebar.slider("CAPEX Batterie (€/kWh)", 100, 500, 250, step=10)
-
 
 # ==========================================
 # ESECUZIONE SIMULAZIONE H2
@@ -166,16 +166,16 @@ else:
 
 # Dimensionamento Base (Sizing Logico su 1 MW)
 if "Con Accumulo" in strategia_batt:
-    ely_base_mw = 0.6  # Elettrolizzatore sottodimensionato per usare CF alto
-    batt_base_mwh = ely_base_mw * 6.0  # Circa 6 ore di batteria
+    ely_base_mw = 0.6  
+    batt_base_mwh = ely_base_mw * 6.0  
 else:
-    ely_base_mw = 1.0  # Direct coupled
+    ely_base_mw = 1.0  
     batt_base_mwh = 0.0
 
 pv_base_array = array_pv_1mw * quota_pv
 wind_base_array = array_wind_1mw * quota_wind
 
-# Test su 1 MW combinato per trovare il fattore di scala
+# Test su 1 MW combinato
 ely_usage_base, _ = simula_h2_plant(pv_base_array, wind_base_array, ely_base_mw, batt_base_mwh)
 energia_prodotta_base = np.sum(ely_usage_base)
 
@@ -204,11 +204,10 @@ energia_rinnovabile_totale = np.sum(pv_final_array) + np.sum(wind_final_array)
 energia_assorbita = np.sum(ely_usage_final)
 energia_sprecata = energia_rinnovabile_totale - energia_assorbita
 
-# -- CALCOLO CF ELETTROLIZZATORE (Aggiunto in Output) --
 ore_funzionamento_eq = energia_assorbita / taglia_ely_mw if taglia_ely_mw > 0 else 0
 cf_ely_percentuale = (ore_funzionamento_eq / 8760.0) * 100 if taglia_ely_mw > 0 else 0
 
-ettari_pv = taglia_pv_mw / 0.7  # Ipotesi standard Tracker
+ettari_pv = taglia_pv_mw / 0.7  
 
 # Calcolo Economico (LCOH)
 WACC = 0.05
@@ -216,14 +215,13 @@ VITA = 20
 CRF = (WACC * (1 + WACC)**VITA) / ((1 + WACC)**VITA - 1)
 
 lcoe_mix = (cfd_pv * quota_pv) + (cfd_wind * quota_wind)
-# Costo energia: Paghiamo TUTTA la rinnovabile generata (incluso il curtailment)
 costo_energia_kg = (energia_rinnovabile_totale * lcoe_mix) / target_h2_kg
 
 costo_ely_kg = (taglia_ely_mw * 1000.0 * capex_ely * CRF) / target_h2_kg
 costo_batt_kg = (taglia_batt_mwh * 1000.0 * capex_batt * CRF) / target_h2_kg
 
 costo_parziale = costo_energia_kg + costo_ely_kg + costo_batt_kg
-costo_opex_stoccaggio = costo_parziale * 0.20  # +20% ricarico fisso
+costo_opex_stoccaggio = costo_parziale * 0.20  
 lcoh_finale = costo_parziale + costo_opex_stoccaggio
 
 # ==========================================
@@ -234,38 +232,37 @@ st.title("🏭 H2 Reverse Engineering: Dati Orari Reali e Sizing Ottimale")
 # KPI PRINCIPALI
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("LCOH Finale", f"€ {lcoh_finale:.2f} / kg")
-
-# -- NUOVA METRICA CON CF ORE/ANNO E % --
-c2.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:.1f} MW", f"CF: {ore_funzionamento_eq:,.0f} h/anno ({cf_ely_percentuale:.1f}%)")
-
-c3.metric("Taglia Batteria (BESS)", f"{taglia_batt_mwh:.1f} MWh")
+c2.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:,.1f} MW", f"CF: {ore_funzionamento_eq:,.0f} h/anno ({cf_ely_percentuale:.1f}%)")
+c3.metric("Taglia Batteria (BESS)", f"{taglia_batt_mwh:,.1f} MWh")
 c4.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} ha", "Tracker 0.7 MW/ha")
 
 st.markdown("---")
 
 # GRAFICO 8760H
 st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore Reali)")
-st.markdown("Grafico basato sulle curve reali. Il fotovoltaico (giallo) e l'eolico (azzurro) alimentano l'elettrolizzatore (rosso). La batteria (verde) livella i picchi.")
 
 df_8760 = pd.DataFrame({
     'Ora': np.arange(8760),
-    'Fotovoltaico': pv_final_array,
+    'PV': pv_final_array,
     'Eolico': wind_final_array,
     'Elettrolizzatore': ely_usage_final,
-    'Batteria_SoC': batt_soc_final
+    'Batteria_SOC': batt_soc_final
 })
 
 fig_8760 = make_subplots(specs=[[{"secondary_y": True}]])
-fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Fotovoltaico'], fill='tozeroy', mode='none', name='PV', fillcolor='rgba(255, 193, 7, 0.4)'), secondary_y=False)
-fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Eolico'], fill='tonexty', mode='none', name='Eolico', fillcolor='rgba(3, 169, 244, 0.4)'), secondary_y=False)
-fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Elettrolizzatore'], mode='lines', name='Elettrolizzatore (MW)', line=dict(color='#D32F2F', width=1)), secondary_y=False)
-if taglia_batt_mwh > 0:
-    fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Batteria_SoC'], mode='lines', name='SoC Batteria (MWh)', line=dict(color='#4CAF50', dash='dot', width=1)), secondary_y=True)
 
-fig_8760.update_layout(xaxis_title="Ore dell'anno", hovermode="x unified", height=450, margin=dict(l=0, r=0, t=30, b=0))
+# Inserimento tracce con colori chiari e definiti
+fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['PV'], mode='lines', name='PV', line=dict(color='#FFC107', width=1.5)), secondary_y=False)
+fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Eolico'], mode='lines', name='Eolico', line=dict(color='#03A9F4', width=1.5)), secondary_y=False)
+fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Elettrolizzatore'], mode='lines', name='Elettrolizzatore', line=dict(color='#D32F2F', width=2)), secondary_y=False)
+
+if taglia_batt_mwh > 0:
+    fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Batteria_SOC'], mode='lines', name='Batteria (SOC orario)', line=dict(color='#4CAF50', width=2)), secondary_y=True)
+
+fig_8760.update_layout(xaxis_title="Ore dell'anno", hovermode="x unified", height=500, margin=dict(l=0, r=0, t=30, b=0))
 fig_8760.update_yaxes(title_text="Potenza (MW)", secondary_y=False)
 if taglia_batt_mwh > 0:
-    fig_8760.update_yaxes(title_text="Energia in Batteria (MWh)", secondary_y=True)
+    fig_8760.update_yaxes(title_text="SOC Batteria (MWh)", secondary_y=True)
 
 st.plotly_chart(fig_8760, use_container_width=True)
 
