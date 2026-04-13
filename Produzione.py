@@ -13,7 +13,7 @@ from numba import njit
 st.set_page_config(page_title="H2READY - LCOH & Sizing (Dati Reali)", layout="wide")
 
 # ==========================================
-# PESI GEOGRAFICI CURVE MEDIE (Esatti dai tuoi file)
+# PESI GEOGRAFICI CURVE MEDIE
 # ==========================================
 PV_WEIGHTS_NORD = {
     'Lombardia orientale, area Brescia_NORD': 0.2956,
@@ -47,9 +47,6 @@ WIND_WEIGHTS_SUD = {
     'Calabria, area Crotone,Catanzaro_SUD': 0.1201,
 }
 
-DEFAULT_PV_NORD_SHARE = 48.0
-DEFAULT_WIND_NORD_SHARE = 1.6
-
 # ==========================================
 # FUNZIONI DI SUPPORTO DATI
 # ==========================================
@@ -76,8 +73,8 @@ def carica_profili_rinnovabili(file_fotovoltaico, file_eolico):
         df_wind = df_wind.dropna(subset=['time']).copy()
         df_wind.set_index('time', inplace=True)
         
-        # Taglio esatto a 8760 ore per sicurezza (anni non bisestili)
-        pv_nord = _serie_pesata(df_pv, PV_WEIGHTS_NORD, scala=1.0).values[:8760] # rimosso scala=1000 se i CSV sono in CF da 0 a 1
+        # Taglio esatto a 8760 ore
+        pv_nord = _serie_pesata(df_pv, PV_WEIGHTS_NORD, scala=1.0).values[:8760] 
         pv_sud = _serie_pesata(df_pv, PV_WEIGHTS_SUD, scala=1.0).values[:8760]
         wind_nord = _serie_pesata(df_wind, WIND_WEIGHTS_NORD, scala=1.0).values[:8760]
         wind_sud = _serie_pesata(df_wind, WIND_WEIGHTS_SUD, scala=1.0).values[:8760]
@@ -130,11 +127,8 @@ st.sidebar.header("🎯 1. Target")
 target_h2_ton = st.sidebar.slider("Target Idrogeno (ton/anno)", 10, 5000, 500, step=10)
 target_h2_kg = target_h2_ton * 1000
 
-st.sidebar.header("🗺️ 2. Mix Geografico (Nord/Sud)")
-quota_pv_nord_pct = st.sidebar.slider("% Fotovoltaico al NORD", 0.0, 100.0, DEFAULT_PV_NORD_SHARE, step=1.0)
-quota_wind_nord_pct = st.sidebar.slider("% Eolico al NORD", 0.0, 100.0, DEFAULT_WIND_NORD_SHARE, step=1.0)
-pv_nord_share = quota_pv_nord_pct / 100.0
-wind_nord_share = quota_wind_nord_pct / 100.0
+st.sidebar.header("🗺️ 2. Localizzazione Geografica")
+regione = st.sidebar.selectbox("Zona Climatica", ["Nord Italia", "Sud Italia / Isole"])
 
 st.sidebar.header("⚖️ 3. Mix Tecnologico")
 quota_pv_pct = st.sidebar.slider("Mix: Fotovoltaico vs Eolico (%)", 0, 100, 50, step=5, help="100=Solo PV, 0=Solo Eolico")
@@ -162,13 +156,17 @@ pv_n, pv_s, w_n, w_s, fallback = carica_profili_rinnovabili(file_pv, file_wind)
 if fallback:
     st.error("⚠️ File CSV non trovati. Controlla che si chiamino esattamente 'dataset_fotovoltaico_produzione.csv' e 'dataset_eolico_produzione.csv' e siano nella stessa cartella.")
 
-# Generazione profili bilanciati NORD/SUD 
-array_pv_1mw = (pv_n * pv_nord_share) + (pv_s * (1.0 - pv_nord_share))
-array_wind_1mw = (w_n * wind_nord_share) + (w_s * (1.0 - wind_nord_share))
+# Selezione Netta dei profili in base alla Regione
+if regione == "Nord Italia":
+    array_pv_1mw = pv_n
+    array_wind_1mw = w_n
+else:
+    array_pv_1mw = pv_s
+    array_wind_1mw = w_s
 
 # Dimensionamento Base (Sizing Logico su 1 MW)
 if "Con Accumulo" in strategia_batt:
-    ely_base_mw = 0.6  # Elettrolizzatore sottomensionato per usare CF alto
+    ely_base_mw = 0.6  # Elettrolizzatore sottodimensionato per usare CF alto
     batt_base_mwh = ely_base_mw * 6.0  # Circa 6 ore di batteria
 else:
     ely_base_mw = 1.0  # Direct coupled
@@ -239,8 +237,8 @@ c4.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} ha", "Tracker 0.7 MW/ha")
 st.markdown("---")
 
 # GRAFICO 8760H (Usiamo Scattergl per alte prestazioni con tanti punti)
-st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore)")
-st.markdown("Generato processando istante per istante i profili meteo reali. Il curtailment si verifica quando PV+Vento superano la linea rossa e la batteria è piena.")
+st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore Reali)")
+st.markdown("Grafico basato sulle curve reali. Il fotovoltaico (giallo) e l'eolico (azzurro) alimentano l'elettrolizzatore (rosso). La batteria (verde) livella i picchi.")
 
 df_8760 = pd.DataFrame({
     'Ora': np.arange(8760),
@@ -287,5 +285,5 @@ with col_g2:
     fig_cap = px.bar(df_cap, x="Asset", y="Valore", color="Asset", text_auto=".1f", color_discrete_sequence=['#FFC107', '#03A9F4', '#D32F2F'])
     fig_cap.update_layout(showlegend=False, yaxis_title="Megawatt (MW)", height=400)
     st.plotly_chart(fig_cap, use_container_width=True)
-
-st.caption(f"⚠️ **Nota Tecnica:** A causa del profilo climatico impostato, per produrre il target richiesto si genera un **curtailment annuo** (energia verde persa) pari a **{energia_sprecata:,.0f} MWh**.")
+    
+st.caption(f"ℹ️ **Dettaglio Efficienza:** Curtailment (Energia Rinnovabile sprecata perché non immagazzinabile) = {energia_sprecata:,.0f} MWh/anno.")
