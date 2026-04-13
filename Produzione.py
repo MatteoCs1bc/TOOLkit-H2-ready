@@ -73,11 +73,13 @@ def carica_profili_rinnovabili(file_fotovoltaico, file_eolico):
         df_wind = df_wind.dropna(subset=['time']).copy()
         df_wind.set_index('time', inplace=True)
         
-        # Taglio esatto a 8760 ore
-        pv_nord = _serie_pesata(df_pv, PV_WEIGHTS_NORD, scala=1.0).values[:8760] 
-        pv_sud = _serie_pesata(df_pv, PV_WEIGHTS_SUD, scala=1.0).values[:8760]
-        wind_nord = _serie_pesata(df_wind, WIND_WEIGHTS_NORD, scala=1.0).values[:8760]
-        wind_sud = _serie_pesata(df_wind, WIND_WEIGHTS_SUD, scala=1.0).values[:8760]
+        # IL BUG ERA QUI: Mancava scala=1000.0 per riportare il PV a un Capacity Factor 0-1
+        pv_nord = _serie_pesata(df_pv, PV_WEIGHTS_NORD, scala=1000.0, clip_upper=1.0).values[:8760] 
+        pv_sud = _serie_pesata(df_pv, PV_WEIGHTS_SUD, scala=1000.0, clip_upper=1.0).values[:8760]
+        
+        # L'eolico era già normalizzato nel CSV, quindi scala=1.0 è corretta
+        wind_nord = _serie_pesata(df_wind, WIND_WEIGHTS_NORD, scala=1.0, clip_upper=1.0).values[:8760]
+        wind_sud = _serie_pesata(df_wind, WIND_WEIGHTS_SUD, scala=1.0, clip_upper=1.0).values[:8760]
         
         return pv_nord, pv_sud, wind_nord, wind_sud, False
     except Exception as e:
@@ -124,7 +126,6 @@ def simula_h2_plant(pv_array_mw, wind_array_mw, ely_mw, batt_mwh, eff_batt=0.90)
 # INTERFACCIA LATERALE
 # ==========================================
 st.sidebar.header("🎯 1. Target")
-# Slider aggiornato per arrivare a 100.000 tonnellate
 target_h2_ton = st.sidebar.slider("Target Idrogeno (ton/anno)", 100, 100000, 1000, step=100)
 target_h2_kg = target_h2_ton * 1000
 
@@ -144,6 +145,7 @@ cfd_pv = st.sidebar.slider("CfD Fotovoltaico (€/MWh)", 30.0, 120.0, 60.0, step
 cfd_wind = st.sidebar.slider("CfD Eolico (€/MWh)", 50.0, 150.0, 80.0, step=5.0)
 capex_ely = st.sidebar.slider("CAPEX Elettrolizzatore (€/kW)", 500, 2000, 1000, step=100)
 capex_batt = st.sidebar.slider("CAPEX Batterie (€/kWh)", 100, 500, 250, step=10)
+
 
 # ==========================================
 # ESECUZIONE SIMULAZIONE H2
@@ -194,13 +196,15 @@ taglia_wind_mw = quota_wind * moltiplicatore_scala
 taglia_ely_mw = ely_base_mw * moltiplicatore_scala
 taglia_batt_mwh = batt_base_mwh * moltiplicatore_scala
 
-# Riesecuzione simulazione esatta (8760 ore)
+# Riesecuzione simulazione esatta scalata (8760 ore)
 pv_final_array = array_pv_1mw * taglia_pv_mw
 wind_final_array = array_wind_1mw * taglia_wind_mw
 ely_usage_final, batt_soc_final = simula_h2_plant(pv_final_array, wind_final_array, taglia_ely_mw, taglia_batt_mwh)
 
 # Risultati Tecnici e CAPACITY FACTOR
-energia_rinnovabile_totale = np.sum(pv_final_array) + np.sum(wind_final_array)
+energia_pv_totale = np.sum(pv_final_array)
+energia_wind_totale = np.sum(wind_final_array)
+energia_rinnovabile_totale = energia_pv_totale + energia_wind_totale
 energia_assorbita = np.sum(ely_usage_final)
 energia_sprecata = energia_rinnovabile_totale - energia_assorbita
 
@@ -209,13 +213,15 @@ cf_ely_percentuale = (ore_funzionamento_eq / 8760.0) * 100 if taglia_ely_mw > 0 
 
 ettari_pv = taglia_pv_mw / 0.7  
 
-# Calcolo Economico (LCOH)
+# Calcolo Economico Avanzato (LCOH)
 WACC = 0.05
 VITA = 20
 CRF = (WACC * (1 + WACC)**VITA) / ((1 + WACC)**VITA - 1)
 
-lcoe_mix = (cfd_pv * quota_pv) + (cfd_wind * quota_wind)
-costo_energia_kg = (energia_rinnovabile_totale * lcoe_mix) / target_h2_kg
+# Ora il costo dell'energia è calcolato esattamente sui MWh prodotti da PV ed Eolico
+costo_energia_pv_totale = energia_pv_totale * cfd_pv
+costo_energia_wind_totale = energia_wind_totale * cfd_wind
+costo_energia_kg = (costo_energia_pv_totale + costo_energia_wind_totale) / target_h2_kg
 
 costo_ely_kg = (taglia_ely_mw * 1000.0 * capex_ely * CRF) / target_h2_kg
 costo_batt_kg = (taglia_batt_mwh * 1000.0 * capex_batt * CRF) / target_h2_kg
@@ -251,7 +257,7 @@ df_8760 = pd.DataFrame({
 
 fig_8760 = make_subplots(specs=[[{"secondary_y": True}]])
 
-# Inserimento tracce con colori chiari e definiti
+# Inserimento tracce come linee per l'8760
 fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['PV'], mode='lines', name='PV', line=dict(color='#FFC107', width=1.5)), secondary_y=False)
 fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Eolico'], mode='lines', name='Eolico', line=dict(color='#03A9F4', width=1.5)), secondary_y=False)
 fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Elettrolizzatore'], mode='lines', name='Elettrolizzatore', line=dict(color='#D32F2F', width=2)), secondary_y=False)
@@ -290,4 +296,4 @@ with col_g2:
     fig_cap.update_layout(showlegend=False, yaxis_title="Megawatt (MW)", height=400)
     st.plotly_chart(fig_cap, use_container_width=True)
     
-st.caption(f"ℹ️ **Dettaglio Efficienza:** Curtailment (Energia Rinnovabile sprecata perché non immagazzinabile) = {energia_sprecata:,.0f} MWh/anno.")
+st.caption(f"ℹ️ **Dettaglio Efficienza:** Curtailment (Energia Rinnovabile sprecata perché non immagazzinabile o superiore al limite dell'elettrolizzatore) = {energia_sprecata:,.0f} MWh/anno.")
