@@ -1,237 +1,285 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px  # <--- ECCO LA RIGA MANCANTE
+import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
-# Configurazione Pagina
-st.set_page_config(page_title="H2READY - LCOH & Space Sizing Tool", layout="wide")
-
-# ... (tutto il resto del codice rimane identico) ...
-# Configurazione Pagina
-st.set_page_config(page_title="H2READY - LCOH & Space Sizing Tool", layout="wide")
+from numba import njit
 
 # ==========================================
-# 1. PARAMETRI E COSTANTI
+# CONFIGURAZIONE PAGINA
 # ==========================================
-EFF_ELY = 55.0  # kWh per 1 kg di H2
-ORE_BASE_PV = 1400.0  # Ore equivalenti medie PV 
-ORE_BASE_WIND = 2000.0  # Ore equivalenti medie Eolico
-RESA_HA_PV = 0.7  # MW per Ettaro (PV Tracker)
-WACC = 0.05
-VITA_UTILE = 20
-CRF = (WACC * (1 + WACC)**VITA_UTILE) / ((1 + WACC)**VITA_UTILE - 1)
+st.set_page_config(page_title="H2 Sizing - Dati Orari Reali", layout="wide")
 
 # ==========================================
-# 2. INTERFACCIA LATERALE (INPUTS)
+# PESI GEOGRAFICI CURVE MEDIE
 # ==========================================
-with st.sidebar:
-    st.header("🎯 1. Target di Produzione")
-    target_h2_ton = st.slider("Target Idrogeno (ton/anno)", 10, 5000, 500, step=10)
-    target_h2_kg = target_h2_ton * 1000
-    
-    st.markdown("---")
-    st.header("⚖️ 2. Mix Energetico")
-    quota_pv_pct = st.slider("Mix: Fotovoltaico vs Eolico (%)", 0, 100, 50, step=5, help="100% = Solo PV, 0% = Solo Eolico")
-    quota_pv = quota_pv_pct / 100.0
-    quota_wind = 1.0 - quota_pv
-    
-    st.markdown("---")
-    st.header("🔋 3. Strategia Accumulo")
-    strategia_batt = st.radio(
-        "Seleziona configurazione impianto:", 
-        ["Senza Accumulo (Direct-Coupled)", "Con Accumulo Ottimizzato BESS"]
-    )
-    
-    st.markdown("---")
-    st.header("💶 4. Costi ed Economia")
-    cfd_pv = st.slider("CfD Fotovoltaico (€/MWh)", 30.0, 120.0, 60.0, step=5.0)
-    cfd_wind = st.slider("CfD Eolico (€/MWh)", 50.0, 150.0, 80.0, step=5.0)
-    capex_ely = st.slider("CAPEX Elettrolizzatore (€/kW)", 500, 2000, 1000, step=100)
-    capex_batt = st.slider("CAPEX Batterie (€/kWh)", 100, 500, 250, step=10)
+PV_WEIGHTS_NORD = {
+    'Lombardia orientale, area Brescia_NORD': 0.2956,
+    'Veneto centrale, area Padova_NORD': 0.2313,
+    'Emilia-Romagna orientale, area Ferrara,pianura_NORD': 0.2213,
+    'Piemonte meridionale, area Cuneo_NORD': 0.1874,
+    'Friuli-Venezia Giulia, area Udine_NORD': 0.0644,
+}
 
-# ==========================================
-# 3. MOTORE DI CALCOLO MATEMATICO
-# ==========================================
-# Energia Totale
-energia_pura_mwh = (target_h2_kg * EFF_ELY) / 1000.0
+PV_WEIGHTS_SUD = {
+    'Puglia, area Lecce_SUD': 0.3241,
+    'Sicilia interna, area Caltanissetta,Enna_SUD': 0.2117,
+    'Lazio meridionale, area Latina_SUD': 0.1982,
+    'Sardegna, area Oristano,Campidano_SUD': 0.1330,
+    'Campania interna, area Benevento_SUD': 0.1330,
+}
 
-if "Con Accumulo" in strategia_batt:
-    molt_energia = 1.10 # +10% per perdite accumulo
-    energia_totale_mwh = energia_pura_mwh * molt_energia
-    # CF Ottimizzato: Il mix rinnovabile viene 'spalmato' dalla batteria
-    cf_base_rinnovabile = (quota_pv * 0.16) + (quota_wind * 0.23)
-    cf_totale_ely = min(cf_base_rinnovabile * 1.6, 0.70) # Le batterie alzano il CF del 60%, con cap al 70%
-    ore_eq_ely = cf_totale_ely * 8760.0
-    taglia_ely_mw = energia_totale_mwh / ore_eq_ely
-    # Dimensionamento euristico batteria: circa 6 ore della taglia dell'elettrolizzatore per stabilizzare
-    taglia_batt_mwh = taglia_ely_mw * 6.0 
-else:
-    molt_energia = 1.0
-    energia_totale_mwh = energia_pura_mwh
-    # CF Diretto: L'elettrolizzatore segue passivamente le rinnovabili, tagliando i picchi (circa 90% dell'energia catturata)
-    cf_base_rinnovabile = (quota_pv * 0.16) + (quota_wind * 0.23)
-    cf_totale_ely = cf_base_rinnovabile * 0.90
-    ore_eq_ely = cf_totale_ely * 8760.0
-    taglia_ely_mw = energia_totale_mwh / ore_eq_ely
-    taglia_batt_mwh = 0.0
+WIND_WEIGHTS_NORD = {
+    'Crinale savonese entroterra ligure_NORD': 0.6020,
+    'Appennino emiliano, area Monte Cimone_NORD': 0.2239,
+    'Piemonte sud-occidentale , Cuneese_NORD': 0.0945,
+    'Veneto orientale , Delta del Po_NORD': 0.0647,
+    'Valle d’Aosta , area alpina_NORD': 0.0149,
+}
 
-# Dimensionamento Rinnovabili
-taglia_pv_mw = (energia_totale_mwh * quota_pv) / ORE_BASE_PV if quota_pv > 0 else 0
-taglia_wind_mw = (energia_totale_mwh * quota_wind) / ORE_BASE_WIND if quota_wind > 0 else 0
-
-# Consumo di suolo (SOLO PV)
-ettari_pv = taglia_pv_mw / RESA_HA_PV
+WIND_WEIGHTS_SUD = {
+    'Puglia, area Foggia,Daunia_SUD': 0.3093,
+    'Sicilia occidentale, area Trapani_SUD': 0.2267,
+    'Campania, area Benevento,Avellino_SUD': 0.1950,
+    'Basilicata, area Melfi,Potenza_SUD': 0.1489,
+    'Calabria, area Crotone,Catanzaro_SUD': 0.1201,
+}
 
 # ==========================================
-# 4. CALCOLO ECONOMICO (LCOH €/kg)
+# FUNZIONI DI SUPPORTO DATI
 # ==========================================
-lcoe_mix = (cfd_pv * quota_pv) + (cfd_wind * quota_wind)
-costo_energia_kg = (lcoe_mix / 1000.0) * EFF_ELY * molt_energia
+def _serie_pesata(df, pesi_colonne, scala=1.0, clip_upper=1.0):
+    colonne_mancanti = [col for col in pesi_colonne if col not in df.columns]
+    if colonne_mancanti:
+        raise KeyError("Mancano colonne: " + ", ".join(colonne_mancanti))
+    serie = sum(pd.to_numeric(df[col], errors='coerce').fillna(0.0) * peso for col, peso in pesi_colonne.items())
+    serie = (serie / scala).clip(lower=0.0)
+    if clip_upper is not None:
+        serie = serie.clip(upper=clip_upper)
+    return serie.astype(float)
 
-capex_ely_totale = taglia_ely_mw * 1000.0 * capex_ely
-rata_annua_ely = capex_ely_totale * CRF
-costo_ely_kg = rata_annua_ely / target_h2_kg
-
-capex_batt_totale = taglia_batt_mwh * 1000.0 * capex_batt
-rata_annua_batt = capex_batt_totale * CRF
-costo_batt_kg = rata_annua_batt / target_h2_kg
-
-costo_parziale_kg = costo_energia_kg + costo_ely_kg + costo_batt_kg
-costo_opex_stoccaggio_kg = costo_parziale_kg * 0.20
-
-lcoh_finale = costo_parziale_kg + costo_opex_stoccaggio_kg
-
-# ==========================================
-# 5. SIMULAZIONE PROFILO ANNUALE (8760 ORE -> COMPRESSO A 876 STEP PER PERFORMANCE)
-# ==========================================
 @st.cache_data
-def genera_profilo_annuale(pv_mw, wind_mw, ely_mw, batt_max_mwh):
-    """Genera un profilo sintetico di 8760 ore (campionato ogni 10 ore per velocità di render)"""
-    steps = 876
-    t = np.arange(steps) * 10 # Ore da 0 a 8760
+def carica_profili_rinnovabili():
+    cartella_script = os.path.dirname(os.path.abspath(__file__))
+    file_pv = os.path.join(cartella_script, "dataset_fotovoltaico_produzione.csv")
+    file_wind = os.path.join(cartella_script, "dataset_eolico_produzione.csv")
     
-    # PV: Ciclo diurno + Stagionalità (Picco estate, basso inverno)
-    pv_curve = np.maximum(0, np.sin(t * np.pi/12 - np.pi/2)) * (1 + 0.3*np.cos(t*np.pi/4380 - np.pi)) * pv_mw * 1.5
-    
-    # Wind: Più casuale, leggermente più forte d'inverno
-    wind_curve = np.maximum(0, 0.5 + 0.4*np.sin(t*np.pi/72) + 0.3*np.cos(t*np.pi/4380)) * wind_mw * 1.2
-    
-    ren_tot = pv_curve + wind_curve
-    
-    ely_usage = np.zeros(steps)
-    batt_soc = np.zeros(steps)
-    soc_current = batt_max_mwh * 0.5 # Parte a metà carica
-    
-    # Simula logica di accumulo
-    for i in range(steps):
-        avail = ren_tot[i]
+    try:
+        df_pv = pd.read_csv(file_pv)
+        df_pv['time'] = pd.to_datetime(df_pv['time'], errors='coerce')
+        df_pv = df_pv.dropna(subset=['time']).copy().set_index('time')
         
-        if batt_max_mwh > 0:
-            if avail >= ely_mw:
-                ely_usage[i] = ely_mw
-                excess = avail - ely_mw
-                charge = min(excess, batt_max_mwh - soc_current)
-                soc_current += charge
-            else:
-                deficit = ely_mw - avail
-                discharge = min(deficit, soc_current)
-                soc_current -= discharge
-                ely_usage[i] = avail + discharge
+        df_wind = pd.read_csv(file_wind)
+        df_wind['time'] = pd.to_datetime(df_wind['time'], errors='coerce')
+        df_wind = df_wind.dropna(subset=['time']).copy().set_index('time')
+        
+        # Taglio o padding a 8760 ore esatte
+        pv_nord = _serie_pesata(df_pv, PV_WEIGHTS_NORD, scala=1000.0).values[:8760]
+        pv_sud = _serie_pesata(df_pv, PV_WEIGHTS_SUD, scala=1000.0).values[:8760]
+        wind_nord = _serie_pesata(df_wind, WIND_WEIGHTS_NORD, scala=1.0).values[:8760]
+        wind_sud = _serie_pesata(df_wind, WIND_WEIGHTS_SUD, scala=1.0).values[:8760]
+        
+        return pv_nord, pv_sud, wind_nord, wind_sud, False
+    except Exception as e:
+        # Fallback di emergenza se mancano i CSV
+        t = np.arange(8760)
+        pv_finto = np.clip(np.sin((t - 6) * np.pi / 12), 0, 1) * 0.8
+        wind_finto = np.clip(0.3 + 0.4 * np.sin(t * np.pi / 72), 0, 1)
+        return pv_finto, pv_finto, wind_finto, wind_finto, True
+
+# ==========================================
+# MOTORE DI SIMULAZIONE ORARIA (NUMBA)
+# ==========================================
+@njit
+def simula_h2_plant(pv_array_mw, wind_array_mw, ely_mw, batt_mwh, eff_batt=0.90):
+    ore = 8760
+    ely_usage = np.zeros(ore)
+    batt_soc = np.zeros(ore)
+    soc = batt_mwh * 0.2  # Parte col 20%
+    sqrt_eff = np.sqrt(eff_batt)
+    
+    for t in range(ore):
+        avail = pv_array_mw[t] + wind_array_mw[t]
+        
+        if avail >= ely_mw:
+            ely_usage[t] = ely_mw
+            excess = avail - ely_mw
+            # Carica la batteria
+            charge_cap = (batt_mwh - soc) / sqrt_eff
+            charge = min(excess, charge_cap)
+            soc += charge * sqrt_eff
         else:
-            ely_usage[i] = min(avail, ely_mw)
+            # Scarica la batteria
+            deficit = ely_mw - avail
+            discharge_cap = soc * sqrt_eff
+            discharge = min(deficit, discharge_cap)
+            soc -= discharge / sqrt_eff
+            ely_usage[t] = avail + discharge
             
-        batt_soc[i] = soc_current
+        batt_soc[t] = soc
         
-    return pd.DataFrame({
-        'Ora': t, 
-        'Fotovoltaico': pv_curve, 
-        'Eolico': wind_curve,
-        'Rinnovabile Totale': ren_tot, 
-        'Elettrolizzatore': ely_usage, 
-        'Batteria_MWh': batt_soc
-    })
-
-df_annuale = genera_profilo_annuale(taglia_pv_mw, taglia_wind_mw, taglia_ely_mw, taglia_batt_mwh)
+    return ely_usage, batt_soc
 
 # ==========================================
-# 6. DASHBOARD E GRAFICI
+# INTERFACCIA LATERALE
 # ==========================================
-st.title("🏭 Simulatore H2: Dimensionamento, Suolo e LCOH (Profilo 8760h)")
+st.sidebar.header("🎯 1. Target")
+target_h2_ton = st.sidebar.slider("Target Idrogeno (ton/anno)", 10, 5000, 500, step=10)
+target_h2_kg = target_h2_ton * 1000
+
+st.sidebar.header("⚖️ 2. Mix Geografico ed Energetico")
+regione = st.sidebar.selectbox("Zona Climatica", ["Nord Italia", "Sud Italia / Isole"])
+quota_pv_pct = st.sidebar.slider("Mix: Fotovoltaico vs Eolico (%)", 0, 100, 50, step=5)
+quota_pv = quota_pv_pct / 100.0
+quota_wind = 1.0 - quota_pv
+
+st.sidebar.header("🔋 3. Strategia Accumulo")
+strategia_batt = st.sidebar.radio("Architettura:", ["Senza Accumulo", "Con Accumulo Ottimizzato BESS"])
+
+st.sidebar.header("💶 4. Costi (CfD e CAPEX)")
+cfd_pv = st.sidebar.slider("CfD Fotovoltaico (€/MWh)", 30.0, 120.0, 60.0, step=5.0)
+cfd_wind = st.sidebar.slider("CfD Eolico (€/MWh)", 50.0, 150.0, 80.0, step=5.0)
+capex_ely = st.sidebar.slider("CAPEX Elettrolizzatore (€/kW)", 500, 2000, 1000, step=100)
+capex_batt = st.sidebar.slider("CAPEX Batterie (€/kWh)", 100, 500, 250, step=10)
+
+# ==========================================
+# ESECUZIONE REVERSE ENGINEERING
+# ==========================================
+# 1. Carico Dati Reali
+pv_n, pv_s, w_n, w_s, usato_fallback = carica_profili_rinnovabili()
+if usato_fallback:
+    st.warning("⚠️ File CSV originali non trovati. Attivato profilo solare/eolico standard di fallback.")
+
+array_pv_1mw = pv_n if regione == "Nord Italia" else pv_s
+array_wind_1mw = w_n if regione == "Nord Italia" else w_s
+
+# 2. Parametri di Base per l'Ottimizzazione (1 MW di Rinnovabile Totale)
+# L'obiettivo è trovare le proporzioni ottimali prima di scalare tutto.
+if "Con Accumulo" in strategia_batt:
+    # Rapporti euristici ottimali
+    ely_base_mw = 0.6  # L'elettrolizzatore è il 60% del picco rinnovabile
+    batt_base_mwh = ely_base_mw * 6.0  # 6 ore di accumulo rispetto all'elettrolizzatore
+else:
+    ely_base_mw = 1.0  # L'elettrolizzatore deve assorbire tutto il picco
+    batt_base_mwh = 0.0
+
+pv_base_array = array_pv_1mw * quota_pv
+wind_base_array = array_wind_1mw * quota_wind
+
+# 3. Simulo l'impianto base da 1MW per capire quanta energia produce
+ely_usage_base, _ = simula_h2_plant(pv_base_array, wind_base_array, ely_base_mw, batt_base_mwh)
+energia_prodotta_base = np.sum(ely_usage_base) # MWh prodotti dall'impianto test
+
+# 4. Calcolo il Moltiplicatore per raggiungere il Target H2
+energia_target_mwh = (target_h2_kg * 55.0) / 1000.0  # Assumendo 55 kWh/kg
+moltiplicatore_scala = energia_target_mwh / energia_prodotta_base
+
+# 5. Taglie Definitive Scalate
+taglia_pv_mw = quota_pv * moltiplicatore_scala
+taglia_wind_mw = quota_wind * moltiplicatore_scala
+taglia_ely_mw = ely_base_mw * moltiplicatore_scala
+taglia_batt_mwh = batt_base_mwh * moltiplicatore_scala
+
+# 6. Rieseguo la simulazione finale per avere le vere curve
+pv_final_array = array_pv_1mw * taglia_pv_mw
+wind_final_array = array_wind_1mw * taglia_wind_mw
+ely_usage_final, batt_soc_final = simula_h2_plant(pv_final_array, wind_final_array, taglia_ely_mw, taglia_batt_mwh)
+
+# 7. Metriche Tecniche Finali
+cf_elettrolizzatore = np.sum(ely_usage_final) / (taglia_ely_mw * 8760.0) if taglia_ely_mw > 0 else 0
+ettari_pv = taglia_pv_mw / 0.7  # Tracker occupa circa 0.7 MW/ha
+energia_rinnovabile_totale = np.sum(pv_final_array) + np.sum(wind_final_array)
+energia_sprecata = energia_rinnovabile_totale - np.sum(ely_usage_final) # Curtailment
+
+# 8. Calcolo Economico (LCOH)
+WACC = 0.05
+VITA = 20
+CRF = (WACC * (1 + WACC)**VITA) / ((1 + WACC)**VITA - 1)
+
+# Costo energia = Energia rinnovabile TOTALE generata * costo ponderato
+lcoe_mix = (cfd_pv * quota_pv) + (cfd_wind * quota_wind)
+costo_energia_totale_anno = energia_rinnovabile_totale * lcoe_mix
+costo_energia_kg = costo_energia_totale_anno / target_h2_kg
+
+costo_ely_kg = (taglia_ely_mw * 1000.0 * capex_ely * CRF) / target_h2_kg
+costo_batt_kg = (taglia_batt_mwh * 1000.0 * capex_batt * CRF) / target_h2_kg
+
+# OPEX impianto (+20% sui costi base)
+costo_parziale = costo_energia_kg + costo_ely_kg + costo_batt_kg
+costo_opex = costo_parziale * 0.20
+lcoh_finale = costo_parziale + costo_opex
+
+# ==========================================
+# DASHBOARD E GRAFICI
+# ==========================================
+st.title("🏭 Simulatore H2 PRO: Reverse Engineering su Dati Orari Reali")
 
 # --- KPI PRINCIPALI ---
-st.markdown("### 📊 Metriche di Progetto")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("LCOH Finale", f"€ {lcoh_finale:.2f} / kg")
-c2.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:.1f} MW", help=f"Capacity Factor: {cf_totale_ely*100:.1f}%")
-if taglia_batt_mwh > 0:
-    c3.metric("Taglia Batteria (BESS)", f"{taglia_batt_mwh:.1f} MWh")
-else:
-    c3.metric("Taglia Batteria (BESS)", "0.0 MWh")
-c4.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} Ettari")
+c2.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:.1f} MW", f"CF: {cf_elettrolizzatore*100:.1f}%")
+c3.metric("Taglia Batteria", f"{taglia_batt_mwh:.1f} MWh")
+c4.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} ha", "Tracker Monoassiale")
 
 st.markdown("---")
 
 # --- GRAFICO ANNUALE 8760h ---
-st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore)")
-st.markdown("Mostra l'interazione tra le fonti rinnovabili (Aree) e il funzionamento dell'elettrolizzatore (Linea Rossa) durante l'anno.")
+st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore Reali)")
+st.markdown("Grafico basato sulle curve reali. Il fotovoltaico (giallo) e l'eolico (azzurro) alimentano l'elettrolizzatore (rosso). La batteria (verde) livella i picchi.")
 
-fig_orario = make_subplots(specs=[[{"secondary_y": True}]])
+df_8760 = pd.DataFrame({
+    'Ora': np.arange(8760),
+    'Fotovoltaico': pv_final_array,
+    'Eolico': wind_final_array,
+    'Elettrolizzatore': ely_usage_final,
+    'Batteria_SoC': batt_soc_final
+})
 
-# Aree Rinnovabili
-fig_orario.add_trace(go.Scatter(x=df_annuale['Ora'], y=df_annuale['Fotovoltaico'], fill='tozeroy', mode='none', name='Fotovoltaico', fillcolor='rgba(255, 193, 7, 0.4)'), secondary_y=False)
-fig_orario.add_trace(go.Scatter(x=df_annuale['Ora'], y=df_annuale['Eolico'], fill='tonexty', mode='none', name='Eolico', fillcolor='rgba(3, 169, 244, 0.4)'), secondary_y=False)
+# Uso Scattergl per performance su 8760 punti
+fig_8760 = make_subplots(specs=[[{"secondary_y": True}]])
 
-# Linea Elettrolizzatore
-fig_orario.add_trace(go.Scatter(x=df_annuale['Ora'], y=df_annuale['Elettrolizzatore'], mode='lines', name='Elettrolizzatore (MW)', line=dict(color='#D32F2F', width=2)), secondary_y=False)
+fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Fotovoltaico'], fill='tozeroy', mode='none', name='PV', fillcolor='rgba(255, 193, 7, 0.4)'), secondary_y=False)
+fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Eolico'], fill='tonexty', mode='none', name='Eolico', fillcolor='rgba(3, 169, 244, 0.4)'), secondary_y=False)
 
-# Linea Batteria (Asse Secondario)
+fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Elettrolizzatore'], mode='lines', name='Elettrolizzatore (MW)', line=dict(color='#D32F2F', width=1)), secondary_y=False)
+
 if taglia_batt_mwh > 0:
-    fig_orario.add_trace(go.Scatter(x=df_annuale['Ora'], y=df_annuale['Batteria_MWh'], mode='lines', name='Stato Batteria (MWh)', line=dict(color='#4CAF50', dash='dot', width=2)), secondary_y=True)
+    fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Batteria_SoC'], mode='lines', name='SoC Batteria (MWh)', line=dict(color='#4CAF50', width=1, dash='dot')), secondary_y=True)
 
-fig_orario.update_layout(
-    xaxis_title="Ore dell'anno (0-8760)", 
-    hovermode="x unified",
-    height=450,
-    margin=dict(l=0, r=0, t=30, b=0)
-)
-fig_orario.update_yaxes(title_text="Potenza (MW)", secondary_y=False)
+fig_8760.update_layout(xaxis_title="Ore dell'anno (1-8760)", hovermode="x unified", height=450, margin=dict(l=0, r=0, t=30, b=0))
+fig_8760.update_yaxes(title_text="Potenza (MW)", secondary_y=False)
 if taglia_batt_mwh > 0:
-    fig_orario.update_yaxes(title_text="Energia Accumulata (MWh)", secondary_y=True, range=[0, taglia_batt_mwh*1.1])
+    fig_8760.update_yaxes(title_text="Energia in Batteria (MWh)", secondary_y=True)
 
-st.plotly_chart(fig_orario, use_container_width=True)
+st.plotly_chart(fig_8760, use_container_width=True)
 
 st.markdown("---")
 
-# --- SCOMPOSIZIONE LCOH E CAPACITA' ---
+# --- GRAFICI INFERIORI ---
 col_g1, col_g2 = st.columns(2)
 
 with col_g1:
-    st.markdown("### 💶 Scomposizione Costo (LCOH)")
+    st.markdown("### 💶 Scomposizione LCOH (€/kg)")
     df_costi = pd.DataFrame({
-        "Componente": ["Costo Energia", "CAPEX Elettrolizzatore", "CAPEX Batterie", "OPEX & Stoccaggio (+20%)"],
-        "€/kg": [costo_energia_kg, costo_ely_kg, costo_batt_kg, costo_opex_stoccaggio_kg]
+        "Componente": ["Energia Rinnovabile", "CAPEX Elettrolizzatore", "CAPEX Batterie", "OPEX & Stoccaggio (+20%)"],
+        "Costo": [costo_energia_kg, costo_ely_kg, costo_batt_kg, costo_opex]
     })
-    fig_costi = go.Figure(data=[
-        go.Bar(name='Costo', x=['LCOH Totale'], y=[costo_energia_kg], marker_color='#2E7D32', text=f"Energia: €{costo_energia_kg:.2f}", textposition='inside'),
-        go.Bar(name='Costo', x=['LCOH Totale'], y=[costo_ely_kg], marker_color='#1565C0', text=f"CAPEX Ely: €{costo_ely_kg:.2f}", textposition='inside'),
-        go.Bar(name='Costo', x=['LCOH Totale'], y=[costo_batt_kg], marker_color='#F9A825', text=f"CAPEX Batt: €{costo_batt_kg:.2f}", textposition='inside'),
-        go.Bar(name='Costo', x=['LCOH Totale'], y=[costo_opex_stoccaggio_kg], marker_color='#424242', text=f"OPEX: €{costo_opex_stoccaggio_kg:.2f}", textposition='inside')
-    ])
-    fig_costi.update_layout(barmode='stack', showlegend=False, yaxis_title="€ / kg H2", height=400)
+    fig_costi = px.bar(df_costi, x="Componente", y="Costo", color="Componente", text_auto=".2f",
+                       color_discrete_sequence=['#2E7D32', '#1565C0', '#F9A825', '#424242'])
+    fig_costi.update_layout(showlegend=False, yaxis_title="€ / kg H2", height=400)
     st.plotly_chart(fig_costi, use_container_width=True)
 
 with col_g2:
-    st.markdown("### 🏗️ Capacità Installata (MW)")
+    st.markdown("### 🏗️ Capacità Impiantistica da Realizzare")
     df_cap = pd.DataFrame({
-        "Tecnologia": ["Fotovoltaico", "Eolico", "Elettrolizzatore"],
-        "MW": [taglia_pv_mw, taglia_wind_mw, taglia_ely_mw]
+        "Asset": ["Fotovoltaico (MW)", "Eolico (MW)", "Elettrolizzatore (MW)"],
+        "Valore": [taglia_pv_mw, taglia_wind_mw, taglia_ely_mw]
     })
-    fig_cap = px.bar(df_cap, x="Tecnologia", y="MW", color="Tecnologia", text_auto=".1f",
+    fig_cap = px.bar(df_cap, x="Asset", y="Valore", color="Asset", text_auto=".1f",
                      color_discrete_sequence=['#FFC107', '#03A9F4', '#D32F2F'])
     fig_cap.update_layout(showlegend=False, yaxis_title="Megawatt (MW)", height=400)
     st.plotly_chart(fig_cap, use_container_width=True)
-
-# Note finali
-st.info("💡 **Dinamica Economica:** Selezionando 'Con Accumulo Ottimizzato', il sistema dimensiona automaticamente una batteria in grado di alzare il Capacity Factor dell'elettrolizzatore. Questo riduce drasticamente la taglia (e il CAPEX) dell'elettrolizzatore necessario, ammortizzando il costo aggiuntivo delle batterie e abbassando il costo finale dell'idrogeno.")
+    
+st.caption(f"ℹ️ **Dettaglio Efficienza:** Curtailment (Energia Rinnovabile sprecata perché non immagazzinabile) = {energia_sprecata:,.0f} MWh/anno.")
