@@ -73,11 +73,11 @@ def carica_profili_rinnovabili(file_fotovoltaico, file_eolico):
         df_wind = df_wind.dropna(subset=['time']).copy()
         df_wind.set_index('time', inplace=True)
         
-        # IL BUG ERA QUI: Mancava scala=1000.0 per riportare il PV a un Capacity Factor 0-1
+        # Taglio esatto a 8760 ore con scala corretta per PV (Capacity Factor 0-1)
         pv_nord = _serie_pesata(df_pv, PV_WEIGHTS_NORD, scala=1000.0, clip_upper=1.0).values[:8760] 
         pv_sud = _serie_pesata(df_pv, PV_WEIGHTS_SUD, scala=1000.0, clip_upper=1.0).values[:8760]
         
-        # L'eolico era già normalizzato nel CSV, quindi scala=1.0 è corretta
+        # L'eolico era già normalizzato
         wind_nord = _serie_pesata(df_wind, WIND_WEIGHTS_NORD, scala=1.0, clip_upper=1.0).values[:8760]
         wind_sud = _serie_pesata(df_wind, WIND_WEIGHTS_SUD, scala=1.0, clip_upper=1.0).values[:8760]
         
@@ -126,7 +126,15 @@ def simula_h2_plant(pv_array_mw, wind_array_mw, ely_mw, batt_mwh, eff_batt=0.90)
 # INTERFACCIA LATERALE
 # ==========================================
 st.sidebar.header("🎯 1. Target")
-target_h2_ton = st.sidebar.slider("Target Idrogeno (ton/anno)", 100, 100000, 1000, step=100)
+# INPUT NUMERICO DIRETTO PER LE TONNELLATE
+target_h2_ton = st.sidebar.number_input(
+    "Target Idrogeno (ton/anno)", 
+    min_value=10, 
+    max_value=1000000, 
+    value=1000, 
+    step=100,
+    help="Inserisci direttamente il numero o usa le freccette"
+)
 target_h2_kg = target_h2_ton * 1000
 
 st.sidebar.header("🗺️ 2. Localizzazione Geografica")
@@ -196,7 +204,7 @@ taglia_wind_mw = quota_wind * moltiplicatore_scala
 taglia_ely_mw = ely_base_mw * moltiplicatore_scala
 taglia_batt_mwh = batt_base_mwh * moltiplicatore_scala
 
-# Riesecuzione simulazione esatta scalata (8760 ore)
+# Riesecuzione simulazione esatta (8760 ore)
 pv_final_array = array_pv_1mw * taglia_pv_mw
 wind_final_array = array_wind_1mw * taglia_wind_mw
 ely_usage_final, batt_soc_final = simula_h2_plant(pv_final_array, wind_final_array, taglia_ely_mw, taglia_batt_mwh)
@@ -210,6 +218,7 @@ energia_sprecata = energia_rinnovabile_totale - energia_assorbita
 
 ore_funzionamento_eq = energia_assorbita / taglia_ely_mw if taglia_ely_mw > 0 else 0
 cf_ely_percentuale = (ore_funzionamento_eq / 8760.0) * 100 if taglia_ely_mw > 0 else 0
+curtailment_percentuale = (energia_sprecata / energia_rinnovabile_totale) * 100 if energia_rinnovabile_totale > 0 else 0
 
 ettari_pv = taglia_pv_mw / 0.7  
 
@@ -218,7 +227,6 @@ WACC = 0.05
 VITA = 20
 CRF = (WACC * (1 + WACC)**VITA) / ((1 + WACC)**VITA - 1)
 
-# Ora il costo dell'energia è calcolato esattamente sui MWh prodotti da PV ed Eolico
 costo_energia_pv_totale = energia_pv_totale * cfd_pv
 costo_energia_wind_totale = energia_wind_totale * cfd_wind
 costo_energia_kg = (costo_energia_pv_totale + costo_energia_wind_totale) / target_h2_kg
@@ -235,16 +243,23 @@ lcoh_finale = costo_parziale + costo_opex_stoccaggio
 # ==========================================
 st.title("🏭 H2 Reverse Engineering: Dati Orari Reali e Sizing Ottimale")
 
-# KPI PRINCIPALI
-c1, c2, c3, c4 = st.columns(4)
+# --- KPI PRINCIPALI ESPANSI ---
+st.markdown("### 📊 Metriche di Progetto")
+c1, c2, c3 = st.columns(3)
 c1.metric("LCOH Finale", f"€ {lcoh_finale:.2f} / kg")
-c2.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:,.1f} MW", f"CF: {ore_funzionamento_eq:,.0f} h/anno ({cf_ely_percentuale:.1f}%)")
-c3.metric("Taglia Batteria (BESS)", f"{taglia_batt_mwh:,.1f} MWh")
-c4.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} ha", "Tracker 0.7 MW/ha")
+c2.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:,.1f} MW")
+c3.metric("CF Elettrolizzatore", f"{cf_ely_percentuale:.1f} %", f"{ore_funzionamento_eq:,.0f} h/anno", delta_color="off")
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+c4, c5, c6 = st.columns(3)
+c4.metric("Taglia Batteria (BESS)", f"{taglia_batt_mwh:,.1f} MWh")
+c5.metric("Curtailment (Energia Persa)", f"{energia_sprecata:,.0f} MWh", f"-{curtailment_percentuale:.1f}% dell'energia prodotta", delta_color="inverse")
+c6.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} ha", "Tracker Monoassiale")
 
 st.markdown("---")
 
-# GRAFICO 8760H
+# --- GRAFICO 8760H ---
 st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore Reali)")
 
 df_8760 = pd.DataFrame({
@@ -257,7 +272,7 @@ df_8760 = pd.DataFrame({
 
 fig_8760 = make_subplots(specs=[[{"secondary_y": True}]])
 
-# Inserimento tracce come linee per l'8760
+# Inserimento tracce con colori chiari e definiti
 fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['PV'], mode='lines', name='PV', line=dict(color='#FFC107', width=1.5)), secondary_y=False)
 fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Eolico'], mode='lines', name='Eolico', line=dict(color='#03A9F4', width=1.5)), secondary_y=False)
 fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Elettrolizzatore'], mode='lines', name='Elettrolizzatore', line=dict(color='#D32F2F', width=2)), secondary_y=False)
@@ -295,5 +310,3 @@ with col_g2:
     fig_cap = px.bar(df_cap, x="Asset", y="Valore", color="Asset", text_auto=".1f", color_discrete_sequence=['#FFC107', '#03A9F4', '#D32F2F'])
     fig_cap.update_layout(showlegend=False, yaxis_title="Megawatt (MW)", height=400)
     st.plotly_chart(fig_cap, use_container_width=True)
-    
-st.caption(f"ℹ️ **Dettaglio Efficienza:** Curtailment (Energia Rinnovabile sprecata perché non immagazzinabile o superiore al limite dell'elettrolizzatore) = {energia_sprecata:,.0f} MWh/anno.")
