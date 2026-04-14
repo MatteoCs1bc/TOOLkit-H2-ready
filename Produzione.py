@@ -141,7 +141,7 @@ quota_wind = 1.0 - quota_pv
 
 st.sidebar.header("🔋 4. Architettura Accumulo")
 strategia_batt = st.sidebar.radio("Seleziona configurazione impianto:", ["Senza Accumulo", "Con Accumulo Ottimizzato BESS"])
-limite_batt_pv = st.sidebar.slider("Limite max Batteria (x MW Fotovoltaico)", 0.0, 5.0, 3.0, step=0.5, help="Limita la taglia massima della batteria a un multiplo della taglia del fotovoltaico.")
+limite_batt_pv = st.sidebar.slider("Limite max Batteria (x MW Fotovoltaico)", 0.0, 5.0, 3.0, step=0.5)
 
 st.sidebar.header("💶 5. Costi Economici (CfD / CAPEX)")
 cfd_pv = st.sidebar.slider("CfD Fotovoltaico (€/MWh)", 30.0, 120.0, 60.0, step=5.0)
@@ -149,8 +149,21 @@ cfd_wind = st.sidebar.slider("CfD Eolico (€/MWh)", 50.0, 150.0, 80.0, step=5.0
 capex_ely = st.sidebar.slider("CAPEX Elettrolizzatore (€/kW)", 500, 2000, 1000, step=100)
 capex_batt = st.sidebar.slider("CAPEX Batterie (€/kWh)", 100, 500, 150, step=10)
 
-st.sidebar.header("💰 6. Mercato e Rientro")
-prezzo_vendita_h2 = st.sidebar.slider("Prezzo Vendita H2 (€/kg)", 2.0, 20.0, 8.0, step=0.5, help="Prezzo a cui venderai l'idrogeno o valore del metano sostituito.")
+st.sidebar.header("🛢️ 6. Stoccaggio Idrogeno")
+perc_stoccaggio = st.sidebar.slider("Volume da Stoccare (% su Prod. Annua)", 0.0, 10.0, 1.0, step=0.1, help="1% equivale a circa 3,6 giorni di accumulo/autonomia operativa.")
+st.sidebar.markdown("""
+<div style='font-size: 0.85em; color: #666; margin-bottom: 10px;'>
+<b>Valori di riferimento CAPEX Stoccaggio:</b><br>
+• Liquido (-253°C): ~100 €/kg (OPEX altissimi)<br>
+• Bassa Press. (200-300 bar): 447 - 968 €/kg<br>
+• Alta Press. (430-500 bar): 466 - 1.092 €/kg<br>
+• Altissima (700-1000 bar): > 1.200 €/kg
+</div>
+""", unsafe_allow_html=True)
+capex_stoccaggio_kg = st.sidebar.slider("CAPEX Stoccaggio Forfettario (€/kg)", 100, 1500, 600, step=50, help="Costo d'investimento per ogni kg di capacità stoccata")
+
+st.sidebar.header("💰 7. Mercato e Rientro")
+prezzo_vendita_h2 = st.sidebar.slider("Prezzo Vendita H2 (€/kg)", 2.0, 20.0, 8.0, step=0.5)
 
 # ==========================================
 # ESECUZIONE SIMULAZIONE H2
@@ -214,21 +227,32 @@ cf_ely_percentuale = (ore_funzionamento_eq / 8760.0) * 100 if taglia_ely_mw > 0 
 curtailment_percentuale = (energia_sprecata / energia_rinnovabile_totale) * 100 if energia_rinnovabile_totale > 0 else 0
 ettari_pv = taglia_pv_mw / 0.7  
 
-# LCOH
+# Capacità di Stoccaggio in kg
+capacita_stoccaggio_kg = target_h2_kg * (perc_stoccaggio / 100.0)
+capex_stoccaggio_totale = capacita_stoccaggio_kg * capex_stoccaggio_kg
+
+# LCOH Finanziario (Modello PPA)
 WACC = 0.05
 VITA = 20
 CRF = (WACC * (1 + WACC)**VITA) / ((1 + WACC)**VITA - 1)
 
+# Costi OPEX Energia
 costo_energia_pv_totale = energia_pv_totale * cfd_pv
 costo_energia_wind_totale = energia_wind_totale * cfd_wind
 costo_energia_kg = (costo_energia_pv_totale + costo_energia_wind_totale) / target_h2_kg
 
-costo_ely_kg = (taglia_ely_mw * 1000.0 * capex_ely * CRF) / target_h2_kg
-costo_batt_kg = (taglia_batt_mwh * 1000.0 * capex_batt * CRF) / target_h2_kg
+# Costi Ammortizzati CAPEX
+costo_ely_kg_amm = (taglia_ely_mw * 1000.0 * capex_ely * CRF) / target_h2_kg
+costo_batt_kg_amm = (taglia_batt_mwh * 1000.0 * capex_batt * CRF) / target_h2_kg
+costo_stoccaggio_kg_amm = (capex_stoccaggio_totale * CRF) / target_h2_kg
 
-costo_parziale = costo_energia_kg + costo_ely_kg + costo_batt_kg
-costo_opex_stoccaggio = costo_parziale * 0.20  
-lcoh_finale = costo_parziale + costo_opex_stoccaggio
+# Costi OPEX Fissi Manutenzione
+capex_totale_impianti = (taglia_ely_mw * 1000 * capex_ely) + (taglia_batt_mwh * 1000 * capex_batt) + capex_stoccaggio_totale
+opex_manutenzione_annuale = capex_totale_impianti * 0.03 # 3% O&M su tutto il CAPEX
+costo_opex_manutenzione_kg = opex_manutenzione_annuale / target_h2_kg
+
+# LCOH Finale
+lcoh_finale = costo_energia_kg + costo_ely_kg_amm + costo_batt_kg_amm + costo_stoccaggio_kg_amm + costo_opex_manutenzione_kg
 
 # ==========================================
 # DASHBOARD E GRAFICI
@@ -242,35 +266,36 @@ with st.expander("🛠️ Clicca qui per il Menù Metodologico e le Istruzioni")
     L'obiettivo non è dire "quanto idrogeno produce il mio impianto", ma il contrario: l'utente inserisce la **domanda** (Target Idrogeno in ton/anno) e il codice calcola a ritroso:
     1. I Megawatt esatti di Fotovoltaico ed Eolico necessari.
     2. La taglia dell'Elettrolizzatore.
-    3. La capacità del sistema di accumulo (BESS) per stabilizzare la produzione.
+    3. La capacità del sistema di accumulo (BESS) e dei serbatoi di Stoccaggio Idrogeno.
 
     ### La Logica Economica (Modello CfD PPA)
-    * **CAPEX:** Il Comune o l'azienda investe *solo* nell'infrastruttura di trasformazione (Elettrolizzatore) e stoccaggio (Batterie). 
-    * **OPEX:** L'energia rinnovabile (Fotovoltaico ed Eolico) viene acquistata tramite un PPA a prezzo fisso (i cursori CfD €/MWh).
-    * **Payback:** Sottraendo ai ricavi di vendita l'intero OPEX energetico e i costi di manutenzione (3% del CAPEX totale).
+    * **CAPEX:** Il Comune o l'azienda investe nell'infrastruttura di trasformazione (Elettrolizzatore), stoccaggio energetico (Batterie) e magazzino idrogeno (Bombole/Serbatoi). Non si costruisce l'impianto rinnovabile.
+    * **OPEX:** L'energia (Fotovoltaico ed Eolico) viene acquistata tramite un PPA a prezzo fisso (i cursori CfD €/MWh).
+    * **Payback:** Calcolato sottraendo ai ricavi di vendita l'intero OPEX energetico e i costi di manutenzione (3% del CAPEX totale annuo).
     """)
 
 # --- KPI PRINCIPALI ---
 st.markdown("### 📊 Metriche di Progetto")
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("LCOH Finale", f"€ {lcoh_finale:.2f} / kg")
 c2.metric("Taglia Elettrolizzatore", f"{taglia_ely_mw:,.1f} MW")
-c3.metric("CF Elettrolizzatore", f"{cf_ely_percentuale:.1f} %", f"{ore_funzionamento_eq:,.0f} h/anno", delta_color="off")
+c3.metric("CF Elettrolizzatore", f"{cf_ely_percentuale:.1f} %", f"{ore_funzionamento_eq:,.0f} h/y", delta_color="off")
+c4.metric("Capacità Stoccaggio H2", f"{capacita_stoccaggio_kg:,.0f} kg", f"{perc_stoccaggio}% della prod.")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-c4, c5, c6 = st.columns(3)
-c4.metric("Taglia Batteria (BESS)", f"{taglia_batt_mwh:,.1f} MWh")
-c5.metric("Curtailment (Energia Persa)", f"{energia_sprecata:,.0f} MWh", f"-{curtailment_percentuale:.1f}% dell'energia prodotta", delta_color="inverse")
-c6.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} ha", "Tracker Monoassiale")
+c5, c6, c7 = st.columns(3)
+c5.metric("Taglia Batteria (BESS)", f"{taglia_batt_mwh:,.1f} MWh")
+c6.metric("Curtailment (Energia Persa)", f"{energia_sprecata:,.0f} MWh", f"-{curtailment_percentuale:.1f}%", delta_color="inverse")
+c7.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} ha", "Tracker Monoassiale")
 
 st.markdown("---")
-st.markdown("### ⚡ Generazione Rinnovabile")
+st.markdown("### ⚡ Generazione Rinnovabile (Per Contratto PPA)")
 col_rin_1, col_rin_2, col_rin_3, col_rin_4 = st.columns(4)
-col_rin_1.metric("PV Installato", f"{taglia_pv_mw:,.1f} MW")
-col_rin_2.metric("Produzione PV", f"{energia_pv_totale/1000:,.2f} GWh/y")
-col_rin_3.metric("Eolico Installato", f"{taglia_wind_mw:,.1f} MW")
-col_rin_4.metric("Produzione Eolico", f"{energia_wind_totale/1000:,.2f} GWh/y")
+col_rin_1.metric("PV Necessario", f"{taglia_pv_mw:,.1f} MW")
+col_rin_2.metric("Acquisto PV", f"{energia_pv_totale/1000:,.2f} GWh/y")
+col_rin_3.metric("Eolico Necessario", f"{taglia_wind_mw:,.1f} MW")
+col_rin_4.metric("Acquisto Eolico", f"{energia_wind_totale/1000:,.2f} GWh/y")
 
 st.markdown("---")
 
@@ -303,18 +328,15 @@ st.markdown("---")
 # --- ANALISI FINANZIARIA & GRAFICI ---
 st.markdown("### 💶 Sostenibilità Economica e Analisi dei Flussi di Cassa")
 
-# Calcoli Finanziari
-capex_totale_h2 = (taglia_ely_mw * 1000 * capex_ely) + (taglia_batt_mwh * 1000 * capex_batt)
 opex_energia_annuale = costo_energia_pv_totale + costo_energia_wind_totale
-opex_manutenzione_annuale = capex_totale_h2 * 0.03 # 3% O&M su ELY e BATT
 opex_totale_annuale = opex_energia_annuale + opex_manutenzione_annuale
 
 ricavi_annuali = target_h2_kg * prezzo_vendita_h2
 cash_flow_netto = ricavi_annuali - opex_totale_annuale
-payback_anni = (capex_totale_h2 / cash_flow_netto) if cash_flow_netto > 0 else float('inf')
+payback_anni = (capex_totale_impianti / cash_flow_netto) if cash_flow_netto > 0 else float('inf')
 
 col_fin1, col_fin2, col_fin3, col_fin4 = st.columns(4)
-col_fin1.metric("CAPEX Iniziale", f"€ {capex_totale_h2/1e6:,.2f} MLN")
+col_fin1.metric("CAPEX Iniziale", f"€ {capex_totale_impianti/1e6:,.2f} MLN")
 col_fin2.metric("OPEX Annuale (Energia+O&M)", f"€ {opex_totale_annuale/1e6:,.2f} MLN")
 col_fin3.metric("Ricavi Annuali (Vendita)", f"€ {ricavi_annuali/1e6:,.2f} MLN")
 
@@ -327,10 +349,9 @@ else:
 col_graf1, col_graf2 = st.columns(2)
 
 with col_graf1:
-    # Grafico a Barre: Entrate vs Uscite
     df_voci = pd.DataFrame({
-        "Categoria": ["CAPEX (Investimento Anno 0)", "OPEX (Spesa Annuale)", "Ricavi (Entrata Annuale)", "Cash Flow Netto (Annuale)"],
-        "Valore": [-capex_totale_h2, -opex_totale_annuale, ricavi_annuali, cash_flow_netto],
+        "Categoria": ["CAPEX Totale (Investimento)", "OPEX (Spesa Annuale)", "Ricavi (Entrata Annuale)", "Cash Flow Netto (Annuale)"],
+        "Valore": [-capex_totale_impianti, -opex_totale_annuale, ricavi_annuali, cash_flow_netto],
         "Tipo": ["Uscita (Rosso)", "Uscita (Rosso)", "Entrata (Verde)", "Netto (Blu)"]
     })
     
@@ -341,10 +362,9 @@ with col_graf1:
     st.plotly_chart(fig_voci, use_container_width=True)
 
 with col_graf2:
-    # Grafico Lineare: Flusso di Cassa Cumulato
     anni_array = np.arange(0, VITA + 1)
     flussi_array = np.full(VITA + 1, cash_flow_netto)
-    flussi_array[0] = -capex_totale_h2  # Anno 0 solo investimenti, no operatività
+    flussi_array[0] = -capex_totale_impianti 
     flusso_cumulato = np.cumsum(flussi_array)
     
     df_cashflow = pd.DataFrame({'Anno': anni_array, 'Flusso Cumulato': flusso_cumulato})
@@ -353,7 +373,6 @@ with col_graf2:
     fig_cumulato.add_trace(go.Scatter(x=df_cashflow['Anno'], y=df_cashflow['Flusso Cumulato'], 
                                       mode='lines+markers', name='Cash Flow',
                                       line=dict(color='#1976D2', width=3)))
-    # Aggiungo la linea dello zero (Break-even point)
     fig_cumulato.add_hline(y=0, line_dash="dash", line_color="#D32F2F", annotation_text="Break-Even (Pareggio)")
     
     fig_cumulato.update_layout(title="Andamento Flusso di Cassa Cumulato (Payback)",
@@ -362,8 +381,21 @@ with col_graf2:
 
 # Messaggio finale di stato
 if cash_flow_netto < 0:
-    st.error("⚠️ **Progetto in perdita strutturale:** I ricavi dalla vendita dell'idrogeno non riescono a coprire nemmeno l'OPEX (acquisto energia e manutenzione). È necessario ridurre il costo dell'energia (CfD) o aumentare il prezzo di vendita dell'H2.")
+    st.error("⚠️ **Progetto in perdita strutturale:** I ricavi dalla vendita dell'idrogeno non riescono a coprire nemmeno l'OPEX. È necessario ridurre il costo dell'energia (CfD) o aumentare il prezzo di vendita dell'H2.")
 elif payback_anni > VITA:
-    st.warning(f"⚠️ **Rientro troppo lungo:** Il progetto genera cassa, ma il tempo di rientro ({payback_anni:.1f} anni) supera la vita utile dell'impianto ({VITA} anni). È indispensabile ottenere un bando a fondo perduto (es. PNRR) per abbattere il CAPEX iniziale.")
+    st.warning(f"⚠️ **Rientro troppo lungo:** Il progetto genera cassa, ma il tempo di rientro ({payback_anni:.1f} anni) supera la vita utile dell'impianto ({VITA} anni). È indispensabile ottenere un bando a fondo perduto per abbattere il CAPEX iniziale.")
 else:
     st.success(f"✅ **Progetto Bancabile:** Il sistema raggiunge il pareggio finanziario in {payback_anni:.1f} anni. Ottimo scenario per la presentazione a investitori o delibere comunali.")
+
+# ==========================================
+# DISCLAIMER LOGISTICA E RETE
+# ==========================================
+st.markdown("---")
+st.error("""
+**⚠️ DISCLAIMER: COSTI DI TRASPORTO, LOGISTICA E ALLACCIAMENTO RETE NON INCLUSI**
+
+I valori elaborati da questo simulatore rappresentano un Business Case di prefattibilità **"Ex-Works"** (costo di produzione al cancello dell'impianto). Il modello include il CAPEX per lo stoccaggio dell'idrogeno, ma **NON considera in questa fase:**
+* **I costi di Trasporto e Logistica al Consumatore:** L'eventuale acquisto/gestione di carri bombolai (tube trailers) e il costo del trasporto su gomma verso il cliente finale non sono inclusi nei calcoli LCOH.
+* **Oneri di Allacciamento alla Rete Elettrica:** Non sono contabilizzati i costi di infrastruttura civile, i cavidotti, e l'adeguamento o la costruzione di nuove Cabine Primarie/Secondarie per il prelievo dell'energia da rete.
+* **OPEX Energetico di Compressione:** L'elettricità spesa dai compressori per portare l'idrogeno ad alte pressioni (es. 350-700 bar) è considerata a margine; in impianti reali con stoccaggi ad altissima pressione, questo consumo incide visibilmente sui costi operativi totali.
+""")
