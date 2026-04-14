@@ -107,6 +107,11 @@ taglia_batt = min(batt_b * molt, taglia_pv * limite_batt_pv)
 
 ely_usage, batt_soc = simula_h2_plant(arr_pv*taglia_pv, arr_wind*taglia_wind, taglia_ely, taglia_batt)
 
+prod_pv_gwh = np.sum(arr_pv*taglia_pv) / 1000
+prod_wind_gwh = np.sum(arr_wind*taglia_wind) / 1000
+energia_assorbita = np.sum(ely_usage)
+energia_sprecata = (np.sum(arr_pv*taglia_pv) + np.sum(arr_wind*taglia_wind)) - energia_assorbita
+
 # Finanza analitica
 WACC, VITA = 0.05, 20
 CRF = (WACC * (1+WACC)**VITA) / ((1+WACC)**VITA - 1)
@@ -132,41 +137,64 @@ payback = capex_tot / (ricavi - opex_en - opex_maint) if (ricavi - opex_en - ope
 # ==========================================
 st.title("🏭 H2READY - Dashboard Tecnica & Finanziaria")
 
+# LETTURA FILE README AUTOMATICA
 with st.expander("🛠️ SPIEGAZIONE CODICE E METODOLOGIA"):
-    st.markdown("""
-    **Il sistema calcola a ritroso (Reverse Engineering)** l'infrastruttura necessaria per coprire il target di idrogeno annuo.
-    *   **Impianti:** Il dimensionamento PV/Eolico tiene conto del consumo dell'elettrolizzatore + il lavoro dei compressori.
-    *   **Stoccaggio:** Calcolato come massa statica (kg) in base alla percentuale di autonomia richiesta.
-    *   **Rete:** Applica i costi *e-distribuzione 2025*. Se il totale installato supera i 6 MW, il sistema passa automaticamente all'Alta Tensione (AT).
-    """)
+    try:
+        cartella = os.path.dirname(os.path.abspath(__file__))
+        percorso_md = os.path.join(cartella, "README_produzione.md")
+        with open(percorso_md, "r", encoding="utf-8") as f:
+            testo_md = f.read()
+        st.markdown(testo_md)
+    except FileNotFoundError:
+        st.warning("⚠️ File 'README_produzione.md' non trovato nella cartella. Crealo per visualizzare qui le istruzioni metodologiche e la spiegazione dei CfD.")
 
-# KPI TECNICI
-st.subheader("📊 Performance Tecnica & Rinnovabili")
+# --- SEZIONE 1: IMPIANTO E PRODUZIONE H2 ---
+st.subheader("⚙️ Dati Impianto Idrogeno")
 t1, t2, t3, t4 = st.columns(4)
-t1.metric("PV Installato", f"{taglia_pv:.1f} MW", f"{np.sum(arr_pv*taglia_pv)/1000:.1f} GWh/y")
-t2.metric("Eolico Installato", f"{taglia_wind:.1f} MW", f"{np.sum(arr_wind*taglia_wind)/1000:.1f} GWh/y")
-t3.metric("Elettrolizzatore", f"{taglia_ely:.1f} MW", f"CF: {(np.sum(ely_usage)/(taglia_ely*8760)*100):.1f}%")
-t4.metric("Stoccaggio H2", f"{(target_h2_kg * perc_stoccaggio/100)/1000:.1f} ton", f"BESS: {taglia_batt:.1f} MWh")
+t1.metric("Taglia Elettrolizzatore", f"{taglia_ely:,.1f} MW", f"Efficienza: {eff_sistema:.1f} kWh/kg")
+t2.metric("Funzionamento Annuo", f"{(energia_assorbita/taglia_ely):,.0f} h/y", f"Capacity Factor: {(energia_assorbita/(taglia_ely*8760)*100):.1f}%")
+t3.metric("Stoccaggio H2 (Massa)", f"{(target_h2_kg * perc_stoccaggio/100)/1000:,.1f} ton", f"{perc_stoccaggio}% della prod. annua")
+t4.metric("Consumo Suolo PV", f"{taglia_pv/0.7:,.1f} ha", "Tracker Monoassiale")
 
-# GRAFICO 8760
+st.markdown("---")
+
+# --- SEZIONE 2: GENERAZIONE RINNOVABILE E BESS ---
+st.subheader("⚡ Generazione Rinnovabile e Accumulo (Contratti PPA)")
+r1, r2, r3, r4 = st.columns(4)
+r1.metric("PV Installato", f"{taglia_pv:,.1f} MW")
+r2.metric("Produzione PV Annua", f"{prod_pv_gwh:,.2f} GWh/y")
+r3.metric("Eolico Installato", f"{taglia_wind:,.1f} MW")
+r4.metric("Produzione Eolico Annua", f"{prod_wind_gwh:,.2f} GWh/y")
+
+st.markdown("<br>", unsafe_allow_html=True)
+b1, b2, b3, b4 = st.columns(4)
+b1.metric("Capacità BESS Installata", f"{taglia_batt:,.1f} MWh", f"CAPEX: {capex_batt} €/kWh")
+b2.metric("Energia Persa (Curtailment)", f"{energia_sprecata/1000:,.2f} GWh/y", f"-{(energia_sprecata/(prod_pv_gwh*1000 + prod_wind_gwh*1000)*100):.1f}%", delta_color="inverse")
+if tipo_connessione == "ON-GRID (Rete)":
+    b3.metric("Distanza Rete", f"{distanza_rete_km} km", f"{'AT' if taglia_connessione > 6 else 'MT'}")
+else:
+    b3.metric("Connessione Rete", "OFF-GRID", "Isola Completa")
+b4.metric("Consumo Compressori", f"{cons_comp:,.2f} kWh/kg", profilo_comp)
+
+# --- GRAFICO 8760 ---
 st.markdown("---")
 st.markdown("### ⏱️ Profilo Operativo Orario (8760h)")
 df_8760 = pd.DataFrame({'PV': arr_pv*taglia_pv, 'Eolico': arr_wind*taglia_wind, 'Ely': ely_usage, 'SOC': batt_soc})
 fig_8760 = make_subplots(specs=[[{"secondary_y": True}]])
-fig_8760.add_trace(go.Scatter(y=df_8760['PV'], name="PV", line=dict(color='#FFC107')), secondary_y=False)
-fig_8760.add_trace(go.Scatter(y=df_8760['Eolico'], name="Eolico", line=dict(color='#03A9F4')), secondary_y=False)
-fig_8760.add_trace(go.Scatter(y=df_8760['Ely'], name="Assorbimento", line=dict(color='#D32F2F')), secondary_y=False)
-fig_8760.add_trace(go.Scatter(y=df_8760['SOC'], name="BESS SOC", line=dict(color='#4CAF50', dash='dash')), secondary_y=True)
+fig_8760.add_trace(go.Scattergl(y=df_8760['PV'], name="PV", line=dict(color='#FFC107', width=1)), secondary_y=False)
+fig_8760.add_trace(go.Scattergl(y=df_8760['Eolico'], name="Eolico", line=dict(color='#03A9F4', width=1)), secondary_y=False)
+fig_8760.add_trace(go.Scattergl(y=df_8760['Ely'], name="Assorbimento", line=dict(color='#D32F2F', width=2)), secondary_y=False)
+fig_8760.add_trace(go.Scattergl(y=df_8760['SOC'], name="BESS SOC", line=dict(color='#4CAF50', dash='dash')), secondary_y=True)
 st.plotly_chart(fig_8760, use_container_width=True)
 
-# ANALISI FINANZIARIA SPACCHETTATA
+# --- ANALISI FINANZIARIA SPACCHETTATA ---
 st.markdown("---")
 st.subheader("💶 Analisi Finanziaria e Ripartizione CAPEX")
 f1, f2, f3, f4 = st.columns(4)
 f1.metric("LCOH Finale", f"€ {lcoh:.2f} / kg")
-f2.metric("CAPEX Totale", f"€ {capex_tot/1e6:.2f} MLN")
-f3.metric("Payback", f"{payback:.1f} Anni")
-f4.metric("Connessione Rete", f"€ {c_grid/1e3:.0f} k", f"{'AT' if taglia_connessione > 6 else 'MT'}")
+f2.metric("CAPEX Totale", f"€ {capex_tot/1e6:,.2f} MLN")
+f3.metric("Payback Period", f"{payback:.1f} Anni" if payback < 50 else "In Perdita")
+f4.metric("Ricavi di Vendita", f"€ {ricavi/1e6:,.2f} MLN/y")
 
 c_fin1, c_fin2 = st.columns([1, 1])
 with c_fin1:
@@ -175,26 +203,28 @@ with c_fin1:
         'Voce': ['Elettrolizzatore', 'Batterie (BESS)', 'Stoccaggio H2', 'Compressione', 'Allaccio Rete'],
         'Valore': [c_ely, c_batt, c_stocc, c_comp, c_grid]
     })
+    # Tolgo le voci a zero (es. Rete in off-grid) per pulire il grafico
+    df_pie = df_pie[df_pie['Valore'] > 0]
     fig_pie = px.pie(df_pie, values='Valore', names='Voce', hole=0.4, 
                      color_discrete_sequence=px.colors.qualitative.Pastel)
+    fig_pie.update_traces(textposition='inside', textinfo='percent+label')
     st.plotly_chart(fig_pie, use_container_width=True)
 
 with c_fin2:
     st.markdown("**Tabella Analitica Costi**")
     items = [
-        {"Voce": "Elettrolizzatore", "Costo (€)": f"{c_ely:,.0f}", "%": f"{(c_ely/capex_tot*100):.1f}%"},
-        {"Voce": "Batterie BESS", "Costo (€)": f"{c_batt:,.0f}", "%": f"{(c_batt/capex_tot*100):.1f}%"},
-        {"Voce": "Stoccaggio H2 (Tank)", "Costo (€)": f"{c_stocc:,.0f}", "%": f"{(c_stocc/capex_tot*100):.1f}%"},
-        {"Voce": "Sistemi Compressione", "Costo (€)": f"{c_comp:,.0f}", "%": f"{(c_comp/capex_tot*100):.1f}%"},
-        {"Voce": "Allaccio Rete (e-distr)", "Costo (€)": f"{c_grid:,.0f}", "%": f"{(c_grid/capex_tot*100):.1f}%"},
+        {"Voce": "Elettrolizzatore", "Costo (€)": f"{c_ely:,.0f}", "Incidenza %": f"{(c_ely/capex_tot*100):.1f}%"},
+        {"Voce": "Batterie BESS", "Costo (€)": f"{c_batt:,.0f}", "Incidenza %": f"{(c_batt/capex_tot*100):.1f}%"},
+        {"Voce": "Stoccaggio H2 (Tank)", "Costo (€)": f"{c_stocc:,.0f}", "Incidenza %": f"{(c_stocc/capex_tot*100):.1f}%"},
+        {"Voce": "Sistemi Compressione", "Costo (€)": f"{c_comp:,.0f}", "Incidenza %": f"{(c_comp/capex_tot*100):.1f}%"},
+        {"Voce": "Allaccio Rete (e-distr)", "Costo (€)": f"{c_grid:,.0f}", "Incidenza %": f"{(c_grid/capex_tot*100):.1f}%"},
     ]
     st.table(pd.DataFrame(items))
 
 # DISCLAIMER
 st.markdown("---")
 st.error(f"""
-**DISCLAIMER TECNICO:** 
-1. I costi di connessione riflettono le tariffe medie e-distribuzione 2025. 
-2. Lo stoccaggio include solo i serbatoi; la compressione è calcolata separatamente come potenza. 
-3. **Esclusioni:** Trasporto stradale al cliente finale e costi di acquisto/affitto dei terreni.
+**DISCLAIMER TECNICO:** 1. I costi di connessione riflettono le tariffe medie e-distribuzione Ed. Ottobre 2025. 
+2. Lo stoccaggio include solo i serbatoi; la compressione è calcolata separatamente per isolarne la spinta elettrica. 
+3. **Esclusioni:** Trasporto stradale al cliente finale (tube trailers) e costi di acquisizione dei terreni.
 """)
