@@ -10,10 +10,10 @@ from numba import njit
 # ==========================================
 # CONFIGURAZIONE PAGINA
 # ==========================================
-st.set_page_config(page_title="H2READY - LCOH, Sizing & Grid Connection", layout="wide")
+st.set_page_config(page_title="H2READY - Progettazione e Finanza", layout="wide")
 
 # ==========================================
-# PESI GEOGRAFICI CURVE MEDIE (Dataset integrati)
+# DATASET & PESI (NORD/SUD)
 # ==========================================
 PV_WEIGHTS_NORD = {'Lombardia orientale, area Brescia_NORD': 0.2956, 'Veneto centrale, area Padova_NORD': 0.2313, 'Emilia-Romagna orientale, area Ferrara,pianura_NORD': 0.2213, 'Piemonte meridionale, area Cuneo_NORD': 0.1874, 'Friuli-Venezia Giulia, area Udine_NORD': 0.0644}
 PV_WEIGHTS_SUD = {'Puglia, area Lecce_SUD': 0.3241, 'Sicilia interna, area Caltanissetta,Enna_SUD': 0.2117, 'Lazio meridionale, area Latina_SUD': 0.1982, 'Sardegna, area Oristano,Campidano_SUD': 0.1330, 'Campania interna, area Benevento_SUD': 0.1330}
@@ -21,39 +21,31 @@ WIND_WEIGHTS_NORD = {'Crinale savonese entroterra ligure_NORD': 0.6020, 'Appenni
 WIND_WEIGHTS_SUD = {'Puglia, area Foggia,Daunia_SUD': 0.3093, 'Sicilia occidentale, area Trapani_SUD': 0.2267, 'Campania, area Benevento,Avellino_SUD': 0.1950, 'Basilicata, area Melfi,Potenza_SUD': 0.1489, 'Calabria, area Crotone,Catanzaro_SUD': 0.1201}
 
 # ==========================================
-# FUNZIONI DI SUPPORTO DATI
+# FUNZIONI SUPPORTO
 # ==========================================
 def _serie_pesata(df, pesi_colonne, scala=1.0, clip_upper=1.0):
-    colonne_mancanti = [col for col in pesi_colonne if col not in df.columns]
-    if colonne_mancanti: raise KeyError("Dataset incompleto.")
     serie = sum(pd.to_numeric(df[col], errors='coerce').fillna(0.0) * peso for col, peso in pesi_colonne.items())
     return (serie / scala).clip(lower=0.0, upper=clip_upper).astype(float)
 
 @st.cache_data
-def carica_profili_rinnovabili(file_fotovoltaico, file_eolico):
+def carica_profili(file_pv, file_wind):
     try:
-        df_pv = pd.read_csv(file_fotovoltaico)
-        df_pv['time'] = pd.to_datetime(df_pv['time'], errors='coerce')
-        df_pv.set_index('time', inplace=True)
-        df_wind = pd.read_csv(file_eolico)
-        df_wind['time'] = pd.to_datetime(df_wind['time'], errors='coerce')
-        df_wind.set_index('time', inplace=True)
+        df_pv = pd.read_csv(file_pv)
+        df_wind = pd.read_csv(file_wind)
         return _serie_pesata(df_pv, PV_WEIGHTS_NORD, 1000.0).values[:8760], _serie_pesata(df_pv, PV_WEIGHTS_SUD, 1000.0).values[:8760], \
                _serie_pesata(df_wind, WIND_WEIGHTS_NORD).values[:8760], _serie_pesata(df_wind, WIND_WEIGHTS_SUD).values[:8760], False
     except:
         t = np.arange(8760)
-        pv = np.clip(np.sin((t - 6) * np.pi / 12), 0, 1) * 0.8
-        wind = np.clip(0.3 + 0.4 * np.sin(t * np.pi / 72), 0, 1)
-        return pv, pv, wind, wind, True
+        return np.clip(np.sin(t*np.pi/12),0,1)*0.8, np.clip(np.sin(t*np.pi/12),0,1)*0.9, np.random.rand(8760)*0.5, np.random.rand(8760)*0.7, True
 
 @njit
-def simula_h2_plant(pv_array_mw, wind_array_mw, ely_mw, batt_mwh, eff_batt=0.90):
+def simula_h2_plant(pv, wind, ely_mw, batt_mwh, eff_batt=0.90):
     ore = 8760
     ely_usage, batt_soc = np.zeros(ore), np.zeros(ore)
     soc = batt_mwh * 0.2
     sqrt_eff = np.sqrt(eff_batt)
     for t in range(ore):
-        avail = pv_array_mw[t] + wind_array_mw[t]
+        avail = pv[t] + wind[t]
         if avail >= ely_mw:
             ely_usage[t] = ely_mw
             charge = min(avail - ely_mw, (batt_mwh - soc) / sqrt_eff)
@@ -66,151 +58,143 @@ def simula_h2_plant(pv_array_mw, wind_array_mw, ely_mw, batt_mwh, eff_batt=0.90)
     return ely_usage, batt_soc
 
 # ==========================================
-# INTERFACCIA SIDEBAR
+# SIDEBAR
 # ==========================================
 st.sidebar.header("🎯 1. Target")
 target_h2_kg = st.sidebar.number_input("Target Idrogeno (ton/anno)", 10, 1000000, 1000) * 1000
 regione = st.sidebar.selectbox("Zona Climatica", ["Nord Italia", "Sud Italia / Isole"])
 
-st.sidebar.header("⚖️ 2. Mix Tecnologico & Rete")
+st.sidebar.header("⚖️ 2. Mix & Rete")
 quota_pv_pct = st.sidebar.slider("Mix: PV vs Eolico (%)", 0, 100, 50)
-quota_pv = quota_pv_pct / 100.0
-tipo_connessione = st.sidebar.radio("Tipo di Connessione", ["ON-GRID (Allaccio Rete)", "OFF-GRID (Isola)"])
-distanza_rete_km = 0.0
-if tipo_connessione == "ON-GRID (Allaccio Rete)":
-    distanza_rete_km = st.sidebar.slider("Distanza dalla Cabina Primaria (km)", 0.1, 20.0, 2.0)
+tipo_connessione = st.sidebar.radio("Tipo di Connessione", ["ON-GRID (Rete)", "OFF-GRID (Isola)"])
+distanza_rete_km = st.sidebar.slider("Distanza Cabina (km)", 0.1, 20.0, 2.0) if tipo_connessione == "ON-GRID (Rete)" else 0.0
 
 st.sidebar.header("🔋 3. Accumulo BESS")
 strategia_batt = st.sidebar.radio("Configurazione:", ["Senza Accumulo", "Con Accumulo BESS"])
 limite_batt_pv = st.sidebar.slider("Limite Batteria (x MW PV)", 0.0, 5.0, 3.0)
 
-st.sidebar.header("💶 4. Parametri Economici")
-cfd_pv = st.sidebar.slider("CfD Fotovoltaico (€/MWh)", 30.0, 120.0, 60.0)
-cfd_wind = st.sidebar.slider("CfD Eolico (€/MWh)", 50.0, 150.0, 80.0)
-capex_ely = st.sidebar.slider("CAPEX Elettrolizzatore (€/kW)", 500, 2000, 1000)
-capex_batt = st.sidebar.slider("CAPEX Batterie (€/kWh)", 100, 500, 150)
+st.sidebar.header("💶 4. Costi (CfD / CAPEX)")
+cfd_pv = st.sidebar.slider("CfD PV (€/MWh)", 30.0, 120.0, 60.0)
+cfd_wind = st.sidebar.slider("CfD Eolico (€/MWh)", 30.0, 150.0, 80.0)
+capex_ely = st.sidebar.slider("CAPEX Ely (€/kW)", 500, 2000, 1000)
+capex_batt = st.sidebar.slider("CAPEX BESS (€/kWh)", 100, 500, 150)
 
-st.sidebar.header("🗜️ 5. Compressione & Mercato")
-profilo_comp = st.sidebar.selectbox("Compressione", ["Standard (fino 500 bar)", "Booster / Pressione Costante"])
-prezzo_vendita_h2 = st.sidebar.slider("Prezzo Vendita H2 (€/kg)", 2.0, 20.0, 8.0)
+st.sidebar.header("🛢️ 5. Stoccaggio H2")
+perc_stoccaggio = st.sidebar.slider("Volume Stoccaggio (% Prod. Annua)", 0.0, 50.0, 1.0)
+capex_stocc_kg = st.sidebar.slider("CAPEX Serbatoi (€/kg)", 100, 1500, 600)
 
-# ==========================================
-# CALCOLO SIZING
-# ==========================================
-pv_n, pv_s, w_n, w_s, _ = carica_profili_rinnovabili("dataset_fotovoltaico_produzione.csv", "dataset_eolico_produzione.csv")
-array_pv, array_wind = (pv_n, w_n) if regione == "Nord Italia" else (pv_s, w_s)
+st.sidebar.header("🗜️ 6. Compressione")
+profilo_comp = st.sidebar.selectbox("Tipo", ["Standard (500 bar)", "Booster (700 bar)"])
+inc_comp, cons_comp = (0.24, 2.23) if "Standard" in profilo_comp else (0.42, 4.11)
 
-ely_base_mw = 0.6 if "Con Accumulo" in strategia_batt else 1.0
-batt_base_mwh = ely_base_mw * 6.0 if "Con Accumulo" in strategia_batt else 0.0
-
-# Efficienza sistema (Elettrolisi + Compressione)
-consumo_comp = 2.23 if "Standard" in profilo_comp else 4.11
-eff_sistema = 55.0 + consumo_comp
-
-ely_usage_base, _ = simula_h2_plant(array_pv * quota_pv, array_wind * (1-quota_pv), ely_base_mw, batt_base_mwh)
-moltiplicatore = ((target_h2_kg * eff_sistema) / 1000.0) / np.sum(ely_usage_base) if np.sum(ely_usage_base) > 0 else 0
-
-taglia_pv, taglia_wind, taglia_ely = quota_pv * moltiplicatore, (1-quota_pv) * moltiplicatore, ely_base_mw * moltiplicatore
-taglia_batt = min(batt_base_mwh * moltiplicatore, taglia_pv * limite_batt_pv)
-
-# Simulazione finale
-ely_usage, batt_soc = simula_h2_plant(array_pv * taglia_pv, array_wind * taglia_wind, taglia_ely, taglia_batt)
+st.sidebar.header("💰 7. Mercato")
+prezzo_h2 = st.sidebar.slider("Prezzo Vendita H2 (€/kg)", 2.0, 20.0, 8.0)
 
 # ==========================================
-# ANALISI ALLACCIAMENTO RETE (e-distribuzione 2025)
+# LOGICA DI CALCOLO
 # ==========================================
-capex_connessione = 0.0
-label_tensione = "N/A"
-potenza_totale_mw = taglia_pv + taglia_wind
+p_n, p_s, w_n, w_s, fallback = carica_profili("dataset_fotovoltaico_produzione.csv", "dataset_eolico_produzione.csv")
+arr_pv, arr_wind = (p_n, w_n) if regione == "Nord Italia" else (p_s, w_s)
 
-if tipo_connessione == "ON-GRID (Allaccio Rete)":
-    if potenza_totale_mw < 6.0:
-        # Connessione Media Tensione (MT) - Pag. 115 Guide
-        label_tensione = "Media Tensione (MT)"
-        costo_scomparto = 8000 # Allestimento cabina consegna (8.1 k€ arrotondato)
-        costo_km = 155000 # Cavo interrato su strada asfaltata Al 185 (155 k€/km)
-        capex_connessione = costo_scomparto + (costo_km * distanza_rete_km)
-    else:
-        # Connessione Alta Tensione (AT) - Pag. 15 Guide
-        label_tensione = "Alta Tensione (AT - 150kV)"
-        costo_stallo = 730000 # Stallo Linea AT AIS (730 k€)
-        costo_km = 300000 # Linea Aerea Singola Terna (300 k€/km)
-        capex_connessione = costo_stallo + (costo_km * distanza_rete_km)
+eff_sistema = 55.0 + cons_comp
+ely_b, batt_b = (0.6, 6.0) if "Accumulo" in strategia_batt else (1.0, 0.0)
 
-# ==========================================
-# CALCOLO FINANZIARIO
-# ==========================================
+res_base, _ = simula_h2_plant(arr_pv*(quota_pv_pct/100), arr_wind*(1-quota_pv_pct/100), ely_b, batt_b)
+molt = ((target_h2_kg * eff_sistema)/1000.0) / np.sum(res_base) if np.sum(res_base) > 0 else 0
+
+taglia_pv, taglia_wind, taglia_ely = (quota_pv_pct/100)*molt, (1-quota_pv_pct/100)*molt, ely_b*molt
+taglia_batt = min(batt_b * molt, taglia_pv * limite_batt_pv)
+
+ely_usage, batt_soc = simula_h2_plant(arr_pv*taglia_pv, arr_wind*taglia_wind, taglia_ely, taglia_batt)
+
+# Finanza analitica
 WACC, VITA = 0.05, 20
-CRF = (WACC * (1 + WACC)**VITA) / ((1 + WACC)**VITA - 1)
-incidenza_comp = 0.24 if "Standard" in profilo_comp else 0.42
+CRF = (WACC * (1+WACC)**VITA) / ((1+WACC)**VITA - 1)
 
-capex_ely_tot = taglia_ely * 1000 * capex_ely
-capex_batt_tot = taglia_batt * 1000 * capex_batt
-capex_comp_tot = (incidenza_comp * target_h2_kg) / CRF
-capex_totale = capex_ely_tot + capex_batt_tot + capex_comp_tot + capex_connessione
+c_ely = taglia_ely * 1000 * capex_ely
+c_batt = taglia_batt * 1000 * capex_batt
+c_stocc = (target_h2_kg * perc_stoccaggio/100) * capex_stocc_kg
+c_comp = (inc_comp * target_h2_kg) / CRF
+c_grid = 0.0
+taglia_connessione = taglia_pv + taglia_wind
+if tipo_connessione == "ON-GRID (Rete)":
+    c_grid = (730000 + 300000*distanza_rete_km) if taglia_connessione > 6 else (8000 + 155000*distanza_rete_km)
 
-opex_energia = (np.sum(array_pv * taglia_pv) * cfd_pv) + (np.sum(array_wind * taglia_wind) * cfd_wind)
-opex_manutenzione = capex_totale * 0.03
-ricavi = target_h2_kg * prezzo_vendita_h2
-lcoh = (opex_energia + opex_manutenzione + (capex_totale * CRF)) / target_h2_kg
+capex_tot = c_ely + c_batt + c_stocc + c_comp + c_grid
+opex_en = (np.sum(arr_pv*taglia_pv)*cfd_pv) + (np.sum(arr_wind*taglia_wind)*cfd_wind)
+opex_maint = capex_tot * 0.03
+lcoh = (opex_en + opex_maint + (capex_tot * CRF)) / target_h2_kg
+ricavi = target_h2_kg * prezzo_h2
+payback = capex_tot / (ricavi - opex_en - opex_maint) if (ricavi - opex_en - opex_maint) > 0 else 99
 
 # ==========================================
-# DASHBOARD RISULTATI
+# INTERFACCIA GRAFICA
 # ==========================================
-st.title("🏭 H2 Ready: Sizing & Financial Advisor")
-with st.expander("🛠️ Metodologia e Costi Allacciamento e-distribuzione"):
-    st.markdown(f"""
-    I costi di connessione sono estratti dalla **Guida e-distribuzione Ed. Ottobre 2025**:
-    * **MT (< 6MW):** Cavo interrato Al 185mm² (155k€/km) + Cabina Consegna (8k€).
-    * **AT (> 6MW):** Linea Aerea 150kV (300k€/km) + Stallo AIS in Cabina Primaria (730k€).
+st.title("🏭 H2READY - Dashboard Tecnica & Finanziaria")
+
+with st.expander("🛠️ SPIEGAZIONE CODICE E METODOLOGIA"):
+    st.markdown("""
+    **Il sistema calcola a ritroso (Reverse Engineering)** l'infrastruttura necessaria per coprire il target di idrogeno annuo.
+    *   **Impianti:** Il dimensionamento PV/Eolico tiene conto del consumo dell'elettrolizzatore + il lavoro dei compressori.
+    *   **Stoccaggio:** Calcolato come massa statica (kg) in base alla percentuale di autonomia richiesta.
+    *   **Rete:** Applica i costi *e-distribuzione 2025*. Se il totale installato supera i 6 MW, il sistema passa automaticamente all'Alta Tensione (AT).
     """)
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("LCOH", f"€ {lcoh:.2f} / kg")
-m2.metric("CAPEX Connessione", f"€ {capex_connessione/1e3:,.0f} k")
-m3.metric("Tensione Allaccio", label_tensione)
-m4.metric("Distanza Rete", f"{distanza_rete_km} km")
+# KPI TECNICI
+st.subheader("📊 Performance Tecnica & Rinnovabili")
+t1, t2, t3, t4 = st.columns(4)
+t1.metric("PV Installato", f"{taglia_pv:.1f} MW", f"{np.sum(arr_pv*taglia_pv)/1000:.1f} GWh/y")
+t2.metric("Eolico Installato", f"{taglia_wind:.1f} MW", f"{np.sum(arr_wind*taglia_wind)/1000:.1f} GWh/y")
+t3.metric("Elettrolizzatore", f"{taglia_ely:.1f} MW", f"CF: {(np.sum(ely_usage)/(taglia_ely*8760)*100):.1f}%")
+t4.metric("Stoccaggio H2", f"{(target_h2_kg * perc_stoccaggio/100)/1000:.1f} ton", f"BESS: {taglia_batt:.1f} MWh")
 
+# GRAFICO 8760
 st.markdown("---")
+st.markdown("### ⏱️ Profilo Operativo Orario (8760h)")
+df_8760 = pd.DataFrame({'PV': arr_pv*taglia_pv, 'Eolico': arr_wind*taglia_wind, 'Ely': ely_usage, 'SOC': batt_soc})
+fig_8760 = make_subplots(specs=[[{"secondary_y": True}]])
+fig_8760.add_trace(go.Scatter(y=df_8760['PV'], name="PV", line=dict(color='#FFC107')), secondary_y=False)
+fig_8760.add_trace(go.Scatter(y=df_8760['Eolico'], name="Eolico", line=dict(color='#03A9F4')), secondary_y=False)
+fig_8760.add_trace(go.Scatter(y=df_8760['Ely'], name="Assorbimento", line=dict(color='#D32F2F')), secondary_y=False)
+fig_8760.add_trace(go.Scatter(y=df_8760['SOC'], name="BESS SOC", line=dict(color='#4CAF50', dash='dash')), secondary_y=True)
+st.plotly_chart(fig_8760, use_container_width=True)
 
-# --- SEZIONE ALLACCIAMENTO ---
-st.subheader("🔗 Analisi Allacciamento alla Rete")
-c_alt1, c_alt2 = st.columns(2)
-with c_alt1:
-    st.info(f"""
-    **Dettaglio Tecnico:**
-    * Potenza da connettere: **{potenza_totale_mw:.2f} MW**
-    * Tipologia linea: {'Cavo Interrato' if potenza_totale_mw < 6 else 'Elettrodotto Aereo'}
-    * Costo Infrastruttura di Rete: € {capex_connessione:,.0f}
-    """)
-with c_alt2:
-    if tipo_connessione == "OFF-GRID (Isola)":
-        st.warning("⚠️ Modalità Isola: CAPEX Connessione azzerato, ma rischio elevato di curtailment energetico.")
-    else:
-        st.success("✅ Connessione On-Grid inclusa nel Business Case.")
-
-# --- FINANZA ---
+# ANALISI FINANZIARIA SPACCHETTATA
 st.markdown("---")
-st.subheader("💶 Sostenibilità Economica (Payback)")
-cash_flow = ricavi - (opex_energia + opex_manutenzione)
-payback = capex_totale / cash_flow if cash_flow > 0 else float('inf')
-
+st.subheader("💶 Analisi Finanziaria e Ripartizione CAPEX")
 f1, f2, f3, f4 = st.columns(4)
-f1.metric("CAPEX Totale", f"€ {capex_totale/1e6:,.2f} MLN")
-f2.metric("Ricavi Annuali", f"€ {ricavi/1e6:,.2f} MLN")
-f3.metric("OPEX Annuale", f"€ {(opex_energia+opex_manutenzione)/1e6:,.2f} MLN")
-f4.metric("Payback Period", f"{payback:.1f} Anni" if payback < 50 else "Mai")
+f1.metric("LCOH Finale", f"€ {lcoh:.2f} / kg")
+f2.metric("CAPEX Totale", f"€ {capex_tot/1e6:.2f} MLN")
+f3.metric("Payback", f"{payback:.1f} Anni")
+f4.metric("Connessione Rete", f"€ {c_grid/1e3:.0f} k", f"{'AT' if taglia_connessione > 6 else 'MT'}")
 
-# Grafico Flusso Cumulato
-anni = np.arange(0, 21)
-flusso_cum = np.cumsum([-capex_totale] + [cash_flow]*20)
-fig_fin = go.Figure()
-fig_fin.add_trace(go.Scatter(x=anni, y=flusso_cum, mode='lines+markers', name="Cash Flow Cumulato", line=dict(color='#1976D2')))
-fig_fin.add_hline(y=0, line_dash="dash", line_color="red")
-fig_fin.update_layout(title="Andamento Finanziario (20 anni)", xaxis_title="Anno", yaxis_title="Euro (€)")
-st.plotly_chart(fig_fin, use_container_width=True)
+c_fin1, c_fin2 = st.columns([1, 1])
+with c_fin1:
+    st.markdown("**Ripartizione Costi d'Investimento (CAPEX)**")
+    df_pie = pd.DataFrame({
+        'Voce': ['Elettrolizzatore', 'Batterie (BESS)', 'Stoccaggio H2', 'Compressione', 'Allaccio Rete'],
+        'Valore': [c_ely, c_batt, c_stocc, c_comp, c_grid]
+    })
+    fig_pie = px.pie(df_pie, values='Valore', names='Voce', hole=0.4, 
+                     color_discrete_sequence=px.colors.qualitative.Pastel)
+    st.plotly_chart(fig_pie, use_container_width=True)
 
-st.error("""
-**⚠️ DISCLAIMER FINALE**
-I costi di connessione sono basati su medie nazionali. Condizioni orografiche complesse, attraversamenti autostradali o necessità di nuove Cabine Primarie complete (costo ~5-7 M€) non sono incluse e richiedono uno studio di rete specifico da parte del distributore.
+with c_fin2:
+    st.markdown("**Tabella Analitica Costi**")
+    items = [
+        {"Voce": "Elettrolizzatore", "Costo (€)": f"{c_ely:,.0f}", "%": f"{(c_ely/capex_tot*100):.1f}%"},
+        {"Voce": "Batterie BESS", "Costo (€)": f"{c_batt:,.0f}", "%": f"{(c_batt/capex_tot*100):.1f}%"},
+        {"Voce": "Stoccaggio H2 (Tank)", "Costo (€)": f"{c_stocc:,.0f}", "%": f"{(c_stocc/capex_tot*100):.1f}%"},
+        {"Voce": "Sistemi Compressione", "Costo (€)": f"{c_comp:,.0f}", "%": f"{(c_comp/capex_tot*100):.1f}%"},
+        {"Voce": "Allaccio Rete (e-distr)", "Costo (€)": f"{c_grid:,.0f}", "%": f"{(c_grid/capex_tot*100):.1f}%"},
+    ]
+    st.table(pd.DataFrame(items))
+
+# DISCLAIMER
+st.markdown("---")
+st.error(f"""
+**DISCLAIMER TECNICO:** 
+1. I costi di connessione riflettono le tariffe medie e-distribuzione 2025. 
+2. Lo stoccaggio include solo i serbatoi; la compressione è calcolata separatamente come potenza. 
+3. **Esclusioni:** Trasporto stradale al cliente finale e costi di acquisto/affitto dei terreni.
 """)
