@@ -1,23 +1,30 @@
-### 🔄 La Logica del Reverse Engineering
-L'algoritmo non risponde alla domanda *"Quanto idrogeno produce il mio impianto?"*, ma al quesito opposto: **"Data una domanda fissa di idrogeno (Target), quanta infrastruttura devo costruire?"**
-Il sistema calcola a ritroso basandosi su 8760 ore di dati climatici reali:
-1. **La Massa:** Sizing dei serbatoi in base ai giorni di autonomia (buffer) richiesti.
-2. **La Potenza:** Sizing di Elettrolizzatore e Compressori in base al fabbisogno orario.
-3. **L'Energia:** Sizing dei Megawatt di Fotovoltaico ed Eolico necessari per alimentare Elettrolisi e Compressione, supportati dalle batterie (BESS) per coprire i buchi di produzione.
+# 📘 Metodologia e Assunzioni del Modello H2READY
 
----
+Questo simulatore utilizza un approccio di **Ingegneria Inversa (Reverse Engineering)** per trasformare un obiettivo di decarbonizzazione in un progetto infrastrutturale dimensionato.
 
-### 💶 Il Modello Economico PPA e il CfD (Contract for Difference)
-Per garantire la bancabilità, il simulatore adotta un modello finanziario "ibrido", tipico delle grandi *Hydrogen Valleys*:
+### 1. Logica di Produzione Energetica (8760h)
+L'energia non viene calcolata su medie mensili, ma su una simulazione oraria per un intero anno solare.
+* **Profili Climatici:** Utilizziamo database storici (PVGIS/Renewables.ninja) pesati geograficamente per riflettere la resa reale del Nord o del Sud Italia.
+* **Mix Tecnologico:** Il sistema permette di bilanciare Fotovoltaico (picco diurno) ed Eolico (spesso più costante o notturno). L'integrazione delle due fonti serve a massimizzare il **Capacity Factor** dell'elettrolizzatore, riducendo i tempi di fermo macchina.
+* **Priorità di Carico:** L'energia prodotta alimenta prima l'elettrolizzatore; l'eccedenza carica le batterie (BESS); se la batteria è carica e l'elettrolizzatore è al massimo, l'energia viene persa (*Curtailment*).
 
-* **Nessun CAPEX Rinnovabile:** Il progetto **NON** paga la costruzione fisica dei campi fotovoltaici o eolici. L'investimento iniziale (CAPEX) è focalizzato al 100% sull'impianto idrogeno (Elettrolizzatore, BESS, Stoccaggio, Compressori e Allaccio alla Rete).
-* **Il ruolo del CfD (Contract for Difference):** L'energia rinnovabile viene acquistata da parchi terzi tramite un **PPA (Power Purchase Agreement)** a prezzo fisso. I cursori "CfD €/MWh" rappresentano questo *Strike Price*. 
-* **Perché si usa il CfD?** Perché protegge il progetto dalla volatilità del mercato elettrico (PUN). Se il prezzo di borsa sale a 150 €/MWh, tu continui a pagare il tuo CfD (es. 60 €/MWh). L'OPEX energetico diventa così un costo piatto e prevedibile per tutti i 20 anni di vita dell'impianto.
+### 2. Struttura Finanziaria: Il Modello PPA/CfD
+Il tool assume che l'idrogeno sia prodotto tramite un accordo **On-Site PPA** (Power Purchase Agreement):
+* **Senza CAPEX FER:** Non stiamo acquistando i pannelli o le turbine. Assumiamo che un investitore terzo costruisca l'impianto FER e ci venda l'energia.
+* **Prezzo CfD (Strike Price):** Il cursore €/MWh rappresenta il prezzo fisso negoziato. Questo protegge il progetto dalle fluttuazioni del mercato elettrico (PUN), garantendo un costo dell'idrogeno (LCOH) stabile per 20 anni.
 
----
+### 3. Compressione e Stoccaggio: La distinzione tra Massa e Potenza
+Il modello separa rigorosamente queste due componenti critiche:
+* **Lo Stoccaggio (Massa):** Si dimensiona in base ai **kg** che vogliamo tenere di scorta (buffer). Il CAPEX dipende dai materiali dei serbatoi (Tipo I-IV) necessari per resistere alla pressione.
+* **La Compressione (Potenza):** Si dimensiona in base alla spinta necessaria. Questo comporta un **OPEX energetico** (kWh consumati per ogni kg compresso) che viene aggiunto al consumo dell'elettrolizzatore, costringendo il sistema a sovradimensionare le fonti rinnovabili.
 
-### 🔌 Costi di Allacciamento alla Rete (e-distribuzione)
-I costi di connessione sono estratti dalla **Guida e-distribuzione (Ed. Ottobre 2025)** e vengono calcolati dinamicamente in base alla potenza installata:
-* **MT (< 6MW):** Cavo interrato Al 185mm² (155 k€/km) + Cabina Consegna (8 k€).
-* **AT (> 6MW):** Linea Aerea 150kV (300 k€/km) + Stallo AIS in Cabina Primaria (730 k€).
-Se si seleziona la modalità OFF-GRID (Isola), i costi si azzerano ma aumenta esponenzialmente il rischio di sprecare energia (Curtailment).
+### 4. Assunzioni Economiche di Base
+* **Vita Utile:** 20 anni.
+* **WACC (Costo del Capitale):** 5% (parametro standard per progetti infrastrutturali).
+* **O&M (Manutenzione):** Calcolata come il 3% annuo del CAPEX totale (include sostituzione membrane elettrolizzatore, manutenzione compressori e revamping BESS).
+* **Efficienza Elettrolisi:** 55 kWh per kg di H2 prodotto (tecnologia PEM/Alcalina standard).
+
+### 5. Allacciamento Rete (e-distribuzione 2025)
+Il costo di connessione segue la normativa italiana vigente:
+* **Sotto i 6 MW:** Connessione in Media Tensione (MT).
+* **Sopra i 6 MW:** Obbligo di connessione in Alta Tensione (AT) con stallo dedicato in Cabina Primaria, con un salto di costo significativo dovuto alla complessità delle apparecchiature AT.
