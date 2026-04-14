@@ -94,7 +94,7 @@ def simula_h2_plant(pv_array_mw, wind_array_mw, ely_mw, batt_mwh, eff_batt=0.90)
     ore = 8760
     ely_usage = np.zeros(ore)
     batt_soc = np.zeros(ore)
-    soc = batt_mwh * 0.2  # Partenza al 20%
+    soc = batt_mwh * 0.2  
     sqrt_eff = np.sqrt(eff_batt)
     
     for t in range(ore):
@@ -233,8 +233,24 @@ lcoh_finale = costo_parziale + costo_opex_stoccaggio
 # ==========================================
 # DASHBOARD E GRAFICI
 # ==========================================
-st.title("🏭 H2 Reverse Engineering: Dati Orari Reali e Sizing Ottimale")
+st.title("🏭 H2 Reverse Engineering: Sizing Ottimale e Payback")
 
+# --- MENU A TENDINA (README INTEGRATO) ---
+with st.expander("🛠️ Clicca qui per il Menù Metodologico e le Istruzioni"):
+    st.markdown("""
+    ### Come funziona il Reverse Engineering?
+    L'obiettivo non è dire "quanto idrogeno produce il mio impianto", ma il contrario: l'utente inserisce la **domanda** (Target Idrogeno in ton/anno) e il codice calcola a ritroso:
+    1. I Megawatt esatti di Fotovoltaico ed Eolico necessari.
+    2. La taglia dell'Elettrolizzatore.
+    3. La capacità del sistema di accumulo (BESS) per stabilizzare la produzione.
+
+    ### La Logica Economica (Modello CfD PPA)
+    * **CAPEX:** Il Comune o l'azienda investe *solo* nell'infrastruttura di trasformazione (Elettrolizzatore) e stoccaggio (Batterie). 
+    * **OPEX:** L'energia rinnovabile (Fotovoltaico ed Eolico) viene acquistata tramite un PPA a prezzo fisso (i cursori CfD €/MWh).
+    * **Payback:** Sottraendo ai ricavi di vendita l'intero OPEX energetico e i costi di manutenzione (3% del CAPEX totale).
+    """)
+
+# --- KPI PRINCIPALI ---
 st.markdown("### 📊 Metriche di Progetto")
 c1, c2, c3 = st.columns(3)
 c1.metric("LCOH Finale", f"€ {lcoh_finale:.2f} / kg")
@@ -259,7 +275,7 @@ col_rin_4.metric("Produzione Eolico", f"{energia_wind_totale/1000:,.2f} GWh/y")
 st.markdown("---")
 
 # --- GRAFICO 8760H ---
-st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore Reali)")
+st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore)")
 df_8760 = pd.DataFrame({
     'Ora': np.arange(8760),
     'PV': pv_final_array,
@@ -284,8 +300,8 @@ st.plotly_chart(fig_8760, use_container_width=True)
 
 st.markdown("---")
 
-# --- ANALISI FINANZIARIA ---
-st.markdown("### 💶 Sostenibilità Economica e Payback (Opzione A)")
+# --- ANALISI FINANZIARIA & GRAFICI ---
+st.markdown("### 💶 Sostenibilità Economica e Analisi dei Flussi di Cassa")
 
 # Calcoli Finanziari
 capex_totale_h2 = (taglia_ely_mw * 1000 * capex_ely) + (taglia_batt_mwh * 1000 * capex_batt)
@@ -295,22 +311,59 @@ opex_totale_annuale = opex_energia_annuale + opex_manutenzione_annuale
 
 ricavi_annuali = target_h2_kg * prezzo_vendita_h2
 cash_flow_netto = ricavi_annuali - opex_totale_annuale
-
 payback_anni = (capex_totale_h2 / cash_flow_netto) if cash_flow_netto > 0 else float('inf')
 
 col_fin1, col_fin2, col_fin3, col_fin4 = st.columns(4)
-col_fin1.metric("CAPEX Iniziale (Ely+Batt)", f"€ {capex_totale_h2/1e6:,.2f} MLN")
+col_fin1.metric("CAPEX Iniziale", f"€ {capex_totale_h2/1e6:,.2f} MLN")
 col_fin2.metric("OPEX Annuale (Energia+O&M)", f"€ {opex_totale_annuale/1e6:,.2f} MLN")
-col_fin3.metric("Ricavi Vendita H2", f"€ {ricavi_annuali/1e6:,.2f} MLN")
+col_fin3.metric("Ricavi Annuali (Vendita)", f"€ {ricavi_annuali/1e6:,.2f} MLN")
 
 if cash_flow_netto > 0:
-    col_fin4.metric("Tempo di Rientro (Payback)", f"{payback_anni:,.1f} Anni")
+    col_fin4.metric("Tempo di Rientro", f"{payback_anni:,.1f} Anni")
 else:
-    col_fin4.metric("Tempo di Rientro (Payback)", "Mai (In Perdita)", delta_color="inverse")
+    col_fin4.metric("Tempo di Rientro", "In Perdita", delta_color="inverse")
 
+# Grafici Finanziari
+col_graf1, col_graf2 = st.columns(2)
+
+with col_graf1:
+    # Grafico a Barre: Entrate vs Uscite
+    df_voci = pd.DataFrame({
+        "Categoria": ["CAPEX (Investimento Anno 0)", "OPEX (Spesa Annuale)", "Ricavi (Entrata Annuale)", "Cash Flow Netto (Annuale)"],
+        "Valore": [-capex_totale_h2, -opex_totale_annuale, ricavi_annuali, cash_flow_netto],
+        "Tipo": ["Uscita (Rosso)", "Uscita (Rosso)", "Entrata (Verde)", "Netto (Blu)"]
+    })
+    
+    fig_voci = px.bar(df_voci, x="Categoria", y="Valore", color="Tipo", text_auto=".2s",
+                      color_discrete_map={"Uscita (Rosso)": "#D32F2F", "Entrata (Verde)": "#388E3C", "Netto (Blu)": "#1976D2"},
+                      title="Ripartizione Voci Finanziarie (€)")
+    fig_voci.update_layout(showlegend=False, yaxis_title="Euro (€)")
+    st.plotly_chart(fig_voci, use_container_width=True)
+
+with col_graf2:
+    # Grafico Lineare: Flusso di Cassa Cumulato
+    anni_array = np.arange(0, VITA + 1)
+    flussi_array = np.full(VITA + 1, cash_flow_netto)
+    flussi_array[0] = -capex_totale_h2  # Anno 0 solo investimenti, no operatività
+    flusso_cumulato = np.cumsum(flussi_array)
+    
+    df_cashflow = pd.DataFrame({'Anno': anni_array, 'Flusso Cumulato': flusso_cumulato})
+    
+    fig_cumulato = go.Figure()
+    fig_cumulato.add_trace(go.Scatter(x=df_cashflow['Anno'], y=df_cashflow['Flusso Cumulato'], 
+                                      mode='lines+markers', name='Cash Flow',
+                                      line=dict(color='#1976D2', width=3)))
+    # Aggiungo la linea dello zero (Break-even point)
+    fig_cumulato.add_hline(y=0, line_dash="dash", line_color="#D32F2F", annotation_text="Break-Even (Pareggio)")
+    
+    fig_cumulato.update_layout(title="Andamento Flusso di Cassa Cumulato (Payback)",
+                               xaxis_title="Anno di Esercizio", yaxis_title="Euro (€)")
+    st.plotly_chart(fig_cumulato, use_container_width=True)
+
+# Messaggio finale di stato
 if cash_flow_netto < 0:
-    st.error("⚠️ Il progetto è attualmente in perdita. Il prezzo di vendita dell'idrogeno non copre i costi operativi (CfD Energia e Manutenzione). Prova ad abbassare i costi dell'energia o alzare il prezzo di vendita.")
+    st.error("⚠️ **Progetto in perdita strutturale:** I ricavi dalla vendita dell'idrogeno non riescono a coprire nemmeno l'OPEX (acquisto energia e manutenzione). È necessario ridurre il costo dell'energia (CfD) o aumentare il prezzo di vendita dell'H2.")
 elif payback_anni > VITA:
-    st.warning(f"⚠️ Il progetto genera cassa, ma il tempo di rientro ({payback_anni:.1f} anni) supera la vita utile dell'impianto ({VITA} anni). Serve un contributo a fondo perduto sul CAPEX.")
+    st.warning(f"⚠️ **Rientro troppo lungo:** Il progetto genera cassa, ma il tempo di rientro ({payback_anni:.1f} anni) supera la vita utile dell'impianto ({VITA} anni). È indispensabile ottenere un bando a fondo perduto (es. PNRR) per abbattere il CAPEX iniziale.")
 else:
-    st.success(f"✅ Progetto Bancabile. Ritorno dell'investimento previsto in {payback_anni:.1f} anni.")
+    st.success(f"✅ **Progetto Bancabile:** Il sistema raggiunge il pareggio finanziario in {payback_anni:.1f} anni. Ottimo scenario per la presentazione a investitori o delibere comunali.")
