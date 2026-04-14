@@ -73,17 +73,14 @@ def carica_profili_rinnovabili(file_fotovoltaico, file_eolico):
         df_wind = df_wind.dropna(subset=['time']).copy()
         df_wind.set_index('time', inplace=True)
         
-        # Taglio esatto a 8760 ore con scala corretta per PV (Capacity Factor 0-1)
         pv_nord = _serie_pesata(df_pv, PV_WEIGHTS_NORD, scala=1000.0, clip_upper=1.0).values[:8760] 
         pv_sud = _serie_pesata(df_pv, PV_WEIGHTS_SUD, scala=1000.0, clip_upper=1.0).values[:8760]
         
-        # L'eolico era già normalizzato
         wind_nord = _serie_pesata(df_wind, WIND_WEIGHTS_NORD, scala=1.0, clip_upper=1.0).values[:8760]
         wind_sud = _serie_pesata(df_wind, WIND_WEIGHTS_SUD, scala=1.0, clip_upper=1.0).values[:8760]
         
         return pv_nord, pv_sud, wind_nord, wind_sud, False
     except Exception as e:
-        # Fallback curve fittizie in caso di errore
         t = np.arange(8760)
         pv_finto = np.clip(np.sin((t - 6) * np.pi / 12), 0, 1) * 0.8
         wind_finto = np.clip(0.3 + 0.4 * np.sin(t * np.pi / 72), 0, 1)
@@ -106,12 +103,10 @@ def simula_h2_plant(pv_array_mw, wind_array_mw, ely_mw, batt_mwh, eff_batt=0.90)
         if avail >= ely_mw:
             ely_usage[t] = ely_mw
             excess = avail - ely_mw
-            # Carica batteria
             charge_cap = (batt_mwh - soc) / sqrt_eff
             charge = min(excess, charge_cap)
             soc += charge * sqrt_eff
         else:
-            # Scarica batteria
             deficit = ely_mw - avail
             discharge_cap = soc * sqrt_eff
             discharge = min(deficit, discharge_cap)
@@ -126,7 +121,6 @@ def simula_h2_plant(pv_array_mw, wind_array_mw, ely_mw, batt_mwh, eff_batt=0.90)
 # INTERFACCIA LATERALE
 # ==========================================
 st.sidebar.header("🎯 1. Target")
-# INPUT NUMERICO DIRETTO PER LE TONNELLATE
 target_h2_ton = st.sidebar.number_input(
     "Target Idrogeno (ton/anno)", 
     min_value=10, 
@@ -147,13 +141,16 @@ quota_wind = 1.0 - quota_pv
 
 st.sidebar.header("🔋 4. Architettura Accumulo")
 strategia_batt = st.sidebar.radio("Seleziona configurazione impianto:", ["Senza Accumulo", "Con Accumulo Ottimizzato BESS"])
+limite_batt_pv = st.sidebar.slider("Limite max Batteria (x MW Fotovoltaico)", 0.0, 5.0, 3.0, step=0.5, help="Limita la taglia massima della batteria a un multiplo della taglia del fotovoltaico.")
 
 st.sidebar.header("💶 5. Costi Economici (CfD / CAPEX)")
 cfd_pv = st.sidebar.slider("CfD Fotovoltaico (€/MWh)", 30.0, 120.0, 60.0, step=5.0)
 cfd_wind = st.sidebar.slider("CfD Eolico (€/MWh)", 50.0, 150.0, 80.0, step=5.0)
 capex_ely = st.sidebar.slider("CAPEX Elettrolizzatore (€/kW)", 500, 2000, 1000, step=100)
-capex_batt = st.sidebar.slider("CAPEX Batterie (€/kWh)", 100, 500, 250, step=10)
+capex_batt = st.sidebar.slider("CAPEX Batterie (€/kWh)", 100, 500, 150, step=10)
 
+st.sidebar.header("💰 6. Mercato e Rientro")
+prezzo_vendita_h2 = st.sidebar.slider("Prezzo Vendita H2 (€/kg)", 2.0, 20.0, 8.0, step=0.5, help="Prezzo a cui venderai l'idrogeno o valore del metano sostituito.")
 
 # ==========================================
 # ESECUZIONE SIMULAZIONE H2
@@ -164,9 +161,8 @@ file_wind = os.path.join(cartella_script, "dataset_eolico_produzione.csv")
 
 pv_n, pv_s, w_n, w_s, fallback = carica_profili_rinnovabili(file_pv, file_wind)
 if fallback:
-    st.error("⚠️ File CSV non trovati. Controlla che si chiamino esattamente 'dataset_fotovoltaico_produzione.csv' e 'dataset_eolico_produzione.csv' e siano nella stessa cartella.")
+    st.error("⚠️ File CSV non trovati. Verranno usati dati fittizi.")
 
-# Selezione Netta dei profili in base alla Regione
 if regione == "Nord Italia":
     array_pv_1mw = pv_n
     array_wind_1mw = w_n
@@ -174,7 +170,6 @@ else:
     array_pv_1mw = pv_s
     array_wind_1mw = w_s
 
-# Dimensionamento Base (Sizing Logico su 1 MW)
 if "Con Accumulo" in strategia_batt:
     ely_base_mw = 0.6  
     batt_base_mwh = ely_base_mw * 6.0  
@@ -185,31 +180,29 @@ else:
 pv_base_array = array_pv_1mw * quota_pv
 wind_base_array = array_wind_1mw * quota_wind
 
-# Test su 1 MW combinato
 ely_usage_base, _ = simula_h2_plant(pv_base_array, wind_base_array, ely_base_mw, batt_base_mwh)
 energia_prodotta_base = np.sum(ely_usage_base)
 
-# Calcolo del target energetico
 EFF_ELY = 55.0  # kWh/kg
 energia_target_mwh = (target_h2_kg * EFF_ELY) / 1000.0
 
-if energia_prodotta_base > 0:
-    moltiplicatore_scala = energia_target_mwh / energia_prodotta_base
-else:
-    moltiplicatore_scala = 0
+moltiplicatore_scala = energia_target_mwh / energia_prodotta_base if energia_prodotta_base > 0 else 0
 
-# Taglie definitive
 taglia_pv_mw = quota_pv * moltiplicatore_scala
 taglia_wind_mw = quota_wind * moltiplicatore_scala
 taglia_ely_mw = ely_base_mw * moltiplicatore_scala
-taglia_batt_mwh = batt_base_mwh * moltiplicatore_scala
 
-# Riesecuzione simulazione esatta (8760 ore)
+# Calcolo taglia batterie con limite PV
+taglia_batt_mwh_teorica = batt_base_mwh * moltiplicatore_scala
+limite_assoluto_batt_mwh = taglia_pv_mw * limite_batt_pv
+taglia_batt_mwh = min(taglia_batt_mwh_teorica, limite_assoluto_batt_mwh)
+
+# Riesecuzione simulazione esatta
 pv_final_array = array_pv_1mw * taglia_pv_mw
 wind_final_array = array_wind_1mw * taglia_wind_mw
 ely_usage_final, batt_soc_final = simula_h2_plant(pv_final_array, wind_final_array, taglia_ely_mw, taglia_batt_mwh)
 
-# Risultati Tecnici e CAPACITY FACTOR
+# Risultati Tecnici
 energia_pv_totale = np.sum(pv_final_array)
 energia_wind_totale = np.sum(wind_final_array)
 energia_rinnovabile_totale = energia_pv_totale + energia_wind_totale
@@ -219,10 +212,9 @@ energia_sprecata = energia_rinnovabile_totale - energia_assorbita
 ore_funzionamento_eq = energia_assorbita / taglia_ely_mw if taglia_ely_mw > 0 else 0
 cf_ely_percentuale = (ore_funzionamento_eq / 8760.0) * 100 if taglia_ely_mw > 0 else 0
 curtailment_percentuale = (energia_sprecata / energia_rinnovabile_totale) * 100 if energia_rinnovabile_totale > 0 else 0
-
 ettari_pv = taglia_pv_mw / 0.7  
 
-# Calcolo Economico Avanzato (LCOH)
+# LCOH
 WACC = 0.05
 VITA = 20
 CRF = (WACC * (1 + WACC)**VITA) / ((1 + WACC)**VITA - 1)
@@ -243,7 +235,6 @@ lcoh_finale = costo_parziale + costo_opex_stoccaggio
 # ==========================================
 st.title("🏭 H2 Reverse Engineering: Dati Orari Reali e Sizing Ottimale")
 
-# --- KPI PRINCIPALI ESPANSI ---
 st.markdown("### 📊 Metriche di Progetto")
 c1, c2, c3 = st.columns(3)
 c1.metric("LCOH Finale", f"€ {lcoh_finale:.2f} / kg")
@@ -258,10 +249,17 @@ c5.metric("Curtailment (Energia Persa)", f"{energia_sprecata:,.0f} MWh", f"-{cur
 c6.metric("Consumo Suolo PV", f"{ettari_pv:,.1f} ha", "Tracker Monoassiale")
 
 st.markdown("---")
+st.markdown("### ⚡ Generazione Rinnovabile")
+col_rin_1, col_rin_2, col_rin_3, col_rin_4 = st.columns(4)
+col_rin_1.metric("PV Installato", f"{taglia_pv_mw:,.1f} MW")
+col_rin_2.metric("Produzione PV", f"{energia_pv_totale/1000:,.2f} GWh/y")
+col_rin_3.metric("Eolico Installato", f"{taglia_wind_mw:,.1f} MW")
+col_rin_4.metric("Produzione Eolico", f"{energia_wind_totale/1000:,.2f} GWh/y")
+
+st.markdown("---")
 
 # --- GRAFICO 8760H ---
 st.markdown("### ⏱️ Profilo Operativo Annuale (8760 Ore Reali)")
-
 df_8760 = pd.DataFrame({
     'Ora': np.arange(8760),
     'PV': pv_final_array,
@@ -271,12 +269,9 @@ df_8760 = pd.DataFrame({
 })
 
 fig_8760 = make_subplots(specs=[[{"secondary_y": True}]])
-
-# Inserimento tracce con colori chiari e definiti
 fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['PV'], mode='lines', name='PV', line=dict(color='#FFC107', width=1.5)), secondary_y=False)
 fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Eolico'], mode='lines', name='Eolico', line=dict(color='#03A9F4', width=1.5)), secondary_y=False)
 fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Elettrolizzatore'], mode='lines', name='Elettrolizzatore', line=dict(color='#D32F2F', width=2)), secondary_y=False)
-
 if taglia_batt_mwh > 0:
     fig_8760.add_trace(go.Scattergl(x=df_8760['Ora'], y=df_8760['Batteria_SOC'], mode='lines', name='Batteria (SOC orario)', line=dict(color='#4CAF50', width=2)), secondary_y=True)
 
@@ -289,24 +284,33 @@ st.plotly_chart(fig_8760, use_container_width=True)
 
 st.markdown("---")
 
-col_g1, col_g2 = st.columns(2)
+# --- ANALISI FINANZIARIA ---
+st.markdown("### 💶 Sostenibilità Economica e Payback (Opzione A)")
 
-with col_g1:
-    st.markdown("### 💶 Scomposizione LCOH (€/kg)")
-    df_costi = pd.DataFrame({
-        "Componente": ["Costo Energia (PV+Wind)", "CAPEX Elettrolizzatore", "CAPEX Batterie", "OPEX & Stoccaggio (+20%)"],
-        "Costo": [costo_energia_kg, costo_ely_kg, costo_batt_kg, costo_opex_stoccaggio]
-    })
-    fig_costi = px.bar(df_costi, x="Componente", y="Costo", color="Componente", text_auto=".2f", color_discrete_sequence=['#2E7D32', '#1565C0', '#F9A825', '#424242'])
-    fig_costi.update_layout(showlegend=False, yaxis_title="€ / kg H2", height=400)
-    st.plotly_chart(fig_costi, use_container_width=True)
+# Calcoli Finanziari
+capex_totale_h2 = (taglia_ely_mw * 1000 * capex_ely) + (taglia_batt_mwh * 1000 * capex_batt)
+opex_energia_annuale = costo_energia_pv_totale + costo_energia_wind_totale
+opex_manutenzione_annuale = capex_totale_h2 * 0.03 # 3% O&M su ELY e BATT
+opex_totale_annuale = opex_energia_annuale + opex_manutenzione_annuale
 
-with col_g2:
-    st.markdown("### 🏗️ Scomposizione Capacità Installata (MW)")
-    df_cap = pd.DataFrame({
-        "Asset": ["Fotovoltaico (MW)", "Eolico (MW)", "Elettrolizzatore (MW)"],
-        "Valore": [taglia_pv_mw, taglia_wind_mw, taglia_ely_mw]
-    })
-    fig_cap = px.bar(df_cap, x="Asset", y="Valore", color="Asset", text_auto=".1f", color_discrete_sequence=['#FFC107', '#03A9F4', '#D32F2F'])
-    fig_cap.update_layout(showlegend=False, yaxis_title="Megawatt (MW)", height=400)
-    st.plotly_chart(fig_cap, use_container_width=True)
+ricavi_annuali = target_h2_kg * prezzo_vendita_h2
+cash_flow_netto = ricavi_annuali - opex_totale_annuale
+
+payback_anni = (capex_totale_h2 / cash_flow_netto) if cash_flow_netto > 0 else float('inf')
+
+col_fin1, col_fin2, col_fin3, col_fin4 = st.columns(4)
+col_fin1.metric("CAPEX Iniziale (Ely+Batt)", f"€ {capex_totale_h2/1e6:,.2f} MLN")
+col_fin2.metric("OPEX Annuale (Energia+O&M)", f"€ {opex_totale_annuale/1e6:,.2f} MLN")
+col_fin3.metric("Ricavi Vendita H2", f"€ {ricavi_annuali/1e6:,.2f} MLN")
+
+if cash_flow_netto > 0:
+    col_fin4.metric("Tempo di Rientro (Payback)", f"{payback_anni:,.1f} Anni")
+else:
+    col_fin4.metric("Tempo di Rientro (Payback)", "Mai (In Perdita)", delta_color="inverse")
+
+if cash_flow_netto < 0:
+    st.error("⚠️ Il progetto è attualmente in perdita. Il prezzo di vendita dell'idrogeno non copre i costi operativi (CfD Energia e Manutenzione). Prova ad abbassare i costi dell'energia o alzare il prezzo di vendita.")
+elif payback_anni > VITA:
+    st.warning(f"⚠️ Il progetto genera cassa, ma il tempo di rientro ({payback_anni:.1f} anni) supera la vita utile dell'impianto ({VITA} anni). Serve un contributo a fondo perduto sul CAPEX.")
+else:
+    st.success(f"✅ Progetto Bancabile. Ritorno dell'investimento previsto in {payback_anni:.1f} anni.")
