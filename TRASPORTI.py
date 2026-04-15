@@ -24,7 +24,6 @@ def interpolate(year, y_2024, y_2030):
     if year <= 2024: return y_2024
     if year >= 2030: return y_2030
     return y_2024 + (y_2030 - y_2024) * ((year - 2024) / (2030 - 2024))
-import os # Assicurati che os sia importato all'inizio del file
 
 # --- MENU A TENDINA DA FILE ESTERNO ---
 NOME_FILE_MD = "REadMe_Mezzi.md"
@@ -36,7 +35,7 @@ if os.path.exists(NOME_FILE_MD):
         with open(NOME_FILE_MD, "r", encoding="utf-8") as f:
             st.markdown(f.read())
 else:
-    # Piccolo avviso (utile a te mentre programmi) se il file non è nella stessa cartella
+    # Piccolo avviso se il file non è nella stessa cartella
     st.info(f"💡 Suggerimento: Carica il file '{NOME_FILE_MD}' nella stessa cartella per vedere qui le istruzioni.")
 
 # ==========================================
@@ -58,12 +57,14 @@ with st.sidebar:
     giorni_operativi = st.slider("Giorni Operativi Annui", 200, 365, 300, 5)
     tempo_inattivita = st.slider("Finestra max per Ricarica (Ore)", 0.5, 12.0, 5.0, 0.5)
     
-    # --- BLOCCO REINSERITO: Condizioni Ambientali ---
-    st.header("2. Condizioni Ambientali")
+    st.header("2. Dimensionamento Flotta")
+    n_veicoli = st.slider("Numero di veicoli da sostituire", 1, 500, 10, help="Definisce le dimensioni della flotta per calcolare fabbisogno energetico totale e investimenti macro.")
+
+    st.header("3. Condizioni Ambientali")
     orografia = st.selectbox("Orografia del percorso", ["Pianura", "Collinare", "Montagna"])
     inverno_rigido = st.checkbox("Clima Invernale Rigido (< 0°C)")
     
-    st.header("3. Costi Energetici Iniziali (2024)")
+    st.header("4. Costi Energetici Iniziali (2024)")
     p_in_benzina = st.number_input("Benzina (€/l)", value=1.90, format="%.2f") if tipo_veicolo == "Automobile" else 0.0
     p_in_diesel = st.number_input("Diesel (€/l)", value=1.80, format="%.2f")
     p_in_el_rete = st.number_input("Elettricità Rete (€/kWh)", value=0.31, format="%.3f")
@@ -71,7 +72,7 @@ with st.sidebar:
     p_in_h2_rete = st.number_input("H2 da Rete (€/kg)", value=20.00, format="%.2f")
     p_in_h2_fv = st.number_input("H2 Autoprodotto (€/kg)", value=15.00, format="%.2f")
 
-    st.header("4. Proiezioni Tecnologiche")
+    st.header("5. Proiezioni Tecnologiche")
     anno_acquisto = st.slider("Anno Previsto di Acquisto", 2024, 2035, 2024)
     anni_utilizzo = st.slider("Ciclo di Vita Utile (Anni)", 5, 30, 10) 
 
@@ -153,7 +154,6 @@ for idx, r in df_abs.iterrows():
     # 2. Fisica ed Emissioni LCA (Sul ciclo di vita TOTALE)
     aut_ev = r['Autonomia'] * (m_bev_auto if cat=='BEV' else (m_h2_auto if cat=='H2' else 1.0))
     e_prod = c_emiss[tipo_veicolo][cat] / 1000.0 # Tonnellate (fisse per la vita)
-    # Emissioni carburante = Consumo base Excel * Orografia * KM Vita Intera * Fattore CO2
     e_fuel = (r['Consumo'] * mult_env * total_km_life * f_emiss[t]) / 1000.0 
     
     # 3. Costi TCO
@@ -179,7 +179,8 @@ for idx, r in df_abs.iterrows():
         "Autonomia": aut_ev, "Consumo": r['Consumo'], "Eta": r['Eta'] * 100 if r['Eta'] < 2 else r['Eta'],
         "E_Produzione": e_prod, "E_Carburante": e_fuel,
         "Costo_Veicolo": cpx, "Costo_Manutenzione": mnt_cost, "Costo_Carburante": fuel_cost,
-        "TCO_Totale": cpx + mnt_cost + fuel_cost
+        "TCO_Totale": cpx + mnt_cost + fuel_cost,
+        "Consumo_Naturale": consumo_naturale # Salvato per i calcoli di flotta
     })
 
 df_final = pd.DataFrame(res)
@@ -286,3 +287,49 @@ f5 = px.bar(df_melt_c, x="Tecnologia", y="Euro", color="Voce", barmode='stack', 
 f5.add_hline(y=tco_fossile, line_dash="dash", line_color="black", annotation_text=f"Baseline {fossile_name}")
 f5.update_layout(yaxis_title="Euro (€) nel Ciclo di Vita")
 st.plotly_chart(f5, use_container_width=True)
+
+
+# ==========================================
+# 6. ANALISI DI FLOTTA E FABBISOGNO
+# ==========================================
+st.divider()
+st.header(f"🏢 F. Analisi Macro: Transizione Flotta Intera ({n_veicoli} veicoli)")
+st.write("Aggregazione del fabbisogno energetico e dei costi annui. Questo cruscotto evidenzia la differenza tra caricare le batterie prelevando dalla rete e produrre idrogeno verde tramite elettrolizzatori (Efficienza: ~55 kWh per kg di H2).")
+
+# Dati di base estratti per i calcoli di flotta
+row_bev = df_final[df_final['Tecnologia'] == bev_name].iloc[0]
+row_h2 = df_final[df_final['Tecnologia'] == h2_name].iloc[0]
+
+# Consumi totali annui
+cons_annuo_bev_kwh = row_bev['Consumo_Naturale'] * km_annui * n_veicoli
+cons_annuo_h2_kg = row_h2['Consumo_Naturale'] * km_annui * n_veicoli
+energia_elettrolizzatore_annua = cons_annuo_h2_kg * 55.0  # Fabbisogno per produrre H2 (kWh)
+
+# Calcolo costi macro (Annuali e Investimento)
+capex_flotta_bev = row_bev['Costo_Veicolo'] * n_veicoli
+opex_flotta_bev_annuo = (row_bev['Costo_Manutenzione'] + row_bev['Costo_Carburante']) / anni_utilizzo * n_veicoli
+
+capex_flotta_h2 = row_h2['Costo_Veicolo'] * n_veicoli
+opex_flotta_h2_annuo = (row_h2['Costo_Manutenzione'] + row_h2['Costo_Carburante']) / anni_utilizzo * n_veicoli
+
+col_f1, col_f2 = st.columns(2)
+
+with col_f1:
+    st.subheader("🔋 Scenario 100% BEV")
+    st.metric("Fabbisogno Elettrico Diretto", f"{cons_annuo_bev_kwh / 1000:,.1f} MWh/anno", "Energia per la ricarica batterie")
+    st.metric("CAPEX Veicoli (Investimento)", f"€ {capex_flotta_bev / 1e6:,.2f} MLN")
+    st.metric("OPEX Annuo (Energia + Maint.)", f"€ {opex_flotta_bev_annuo / 1000:,.0f} k")
+
+with col_f2:
+    st.subheader("🛢️ Scenario 100% Idrogeno")
+    st.metric("Massa di H2 Consumata", f"{cons_annuo_h2_kg / 1000:,.1f} ton/anno")
+    st.metric("Fabbisogno Elettrico per H2 (FER)", f"{energia_elettrolizzatore_annua / 1000:,.1f} MWh/anno", f"Differenza WtW vs BEV: +{(energia_elettrolizzatore_annua - cons_annuo_bev_kwh)/1000:,.1f} MWh", delta_color="inverse")
+    st.metric("CAPEX Veicoli (Investimento)", f"€ {capex_flotta_h2 / 1e6:,.2f} MLN")
+    st.metric("OPEX Annuo (Energia + Maint.)", f"€ {opex_flotta_h2_annuo / 1000:,.0f} k")
+
+st.info("""
+**💡 Attenzione agli oneri infrastrutturali non inclusi (Infrastruttura di Ricarica/Rifornimento):**
+Ai costi dei mezzi fisici andrà sempre sommata la costruzione dell'infrastruttura. 
+* **BEV:** Da ~€ 2.000 (Wallbox lente) a oltre € 80.000 per ogni colonnina Fast/Ultra-Fast dedicata ai mezzi pesanti.
+* **H2 (FCEV):** La realizzazione di una HRS (Hydrogen Refueling Station) ad alta pressione richiede un CAPEX elevato che solitamente oscilla tra **1 e 3+ Milioni di €** in funzione dei kg erogati al giorno.
+""")
